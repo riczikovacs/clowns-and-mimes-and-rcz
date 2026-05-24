@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./protocol": "./src/protocol.ts",
     "./topology": "./src/topology.ts",
-    "./labyrinth": "./src/labyrinth.ts"
+    "./labyrinth": "./src/labyrinth.ts",
+    "./gridMaze": "./src/gridMaze.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
