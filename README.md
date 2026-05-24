@@ -31,7 +31,6 @@ No build steps are required. Download, install, launch.
 | Look           | Mouse                                          |
 | Sprint         | Hold Shift                                     |
 | Tag / unfreeze | Run into the other player (no button required) |
-| Pause          | Esc                                            |
 
 ## Repository layout
 
