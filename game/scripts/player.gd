@@ -9,6 +9,7 @@ signal sprint_changed(value: float)
 signal frozen_changed(frozen: bool)
 
 const MARKER := preload("res://scenes/exclamation_marker.tscn")
+const AssetPaths := preload("res://scripts/asset_paths.gd")
 const WALK_SPEED := 3.2
 const SPRINT_SPEED := 5.6
 const MAX_SPRINT := 100.0
@@ -42,12 +43,39 @@ var frozen: bool = false:
 @onready var head: MeshInstance3D = $Head
 
 var marker_instance: Node3D = null
+var footstep_player: AudioStreamPlayer3D = null
 
 func _ready() -> void:
 	if is_local and not bot:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	if not is_local:
 		camera.queue_free()
+	_apply_head_texture()
+	_setup_footsteps()
+
+func _setup_footsteps() -> void:
+	var stream: AudioStream = AssetPaths.try_load_audio(AssetPaths.FOOTSTEPS)
+	if stream == null:
+		return
+	if stream is AudioStreamMP3:
+		(stream as AudioStreamMP3).loop = true
+	footstep_player = AudioStreamPlayer3D.new()
+	footstep_player.stream = stream
+	footstep_player.bus = "SFX"
+	footstep_player.unit_size = 8.0
+	footstep_player.max_db = 0.0 if is_local else -6.0
+	footstep_player.volume_db = -80.0
+	add_child(footstep_player)
+	footstep_player.play()
+
+func _apply_head_texture() -> void:
+	var texture: Texture2D = AssetPaths.try_load_texture(team)
+	if texture == null or head == null:
+		return
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = texture
+	mat.albedo_color = Color.WHITE
+	head.material_override = mat
 
 func _input(event: InputEvent) -> void:
 	if bot or not is_local or frozen:
@@ -64,11 +92,13 @@ func _physics_process(delta: float) -> void:
 	if frozen:
 		velocity = Vector3.ZERO
 		move_and_slide()
+		_update_footsteps(0.0, false)
 		return
 	if bot:
 		_apply_bot_movement(delta)
 		return
 	if not is_local:
+		_update_footsteps(velocity.length(), false)
 		return
 	var input_dir := Vector3.ZERO
 	input_dir.z -= Input.get_action_strength("move_forward")
@@ -86,6 +116,7 @@ func _physics_process(delta: float) -> void:
 		sprint_energy -= SPRINT_DRAIN_PER_S * delta
 	else:
 		sprint_energy += SPRINT_REGEN_PER_S * delta
+	_update_footsteps(Vector2(velocity.x, velocity.z).length(), sprinting)
 
 func _apply_bot_movement(delta: float) -> void:
 	var intent := bot_intent
@@ -103,6 +134,22 @@ func _apply_bot_movement(delta: float) -> void:
 		sprint_energy -= SPRINT_DRAIN_PER_S * delta
 	else:
 		sprint_energy += SPRINT_REGEN_PER_S * delta
+	_update_footsteps(Vector2(velocity.x, velocity.z).length(), sprinting)
+
+func _update_footsteps(planar_speed: float, sprinting: bool) -> void:
+	if footstep_player == null:
+		return
+	if planar_speed < 0.2:
+		footstep_player.volume_db = -80.0
+		footstep_player.pitch_scale = 1.0
+		return
+	footstep_player.volume_db = (0.0 if is_local else -8.0)
+	# Pitch scales with speed: walk = 1.0, sprint = ~1.4. Pitch range clamped so
+	# pause doesn't audibly chirp during deceleration.
+	var ratio: float = clampf(planar_speed / WALK_SPEED, 0.85, 1.5)
+	footstep_player.pitch_scale = ratio
+	if sprinting:
+		footstep_player.pitch_scale = clampf(planar_speed / WALK_SPEED, 1.2, 1.6)
 
 func apply_remote_state(pos: Vector3, yaw: float, is_frozen: bool, sprint: float) -> void:
 	global_position = pos
