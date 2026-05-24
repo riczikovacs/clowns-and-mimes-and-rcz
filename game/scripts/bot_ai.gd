@@ -23,6 +23,7 @@ enum State { PATROL, CHASE, FLEE, RESCUE }
 var player: CharacterBody3D
 var rules: Node = null
 var topology: TopologyScript
+var labyrinth: Node3D = null
 var rng := RandomNumberGenerator.new()
 
 var state: int = State.PATROL
@@ -30,6 +31,8 @@ var accumulated: float = 0.0
 var patrol_target: Vector3 = Vector3.ZERO
 var stuck_clock: float = 0.0
 var last_position: Vector3 = Vector3.ZERO
+var current_path: Array[Vector3] = []
+var path_index: int = 0
 
 func _ready() -> void:
 	rng.randomize()
@@ -38,11 +41,12 @@ func _ready() -> void:
 	last_position = player.global_position if player != null else Vector3.ZERO
 	_pick_patrol_target()
 
-func attach(p: CharacterBody3D, id: String, rules_ref: Node, top: TopologyScript) -> void:
+func attach(p: CharacterBody3D, id: String, rules_ref: Node, top: TopologyScript, lab: Node3D = null) -> void:
 	player = p
 	player_id = id
 	rules = rules_ref
 	topology = top
+	labyrinth = lab
 
 func _physics_process(delta: float) -> void:
 	if player == null or rules == null:
@@ -83,11 +87,9 @@ func _choose_state() -> void:
 func _choose_target() -> void:
 	match state:
 		State.CHASE:
-			var enemy_id: String = _nearest_enemy_id()
-			patrol_target = _position_of(enemy_id)
+			patrol_target = _position_of(_nearest_enemy_id())
 		State.FLEE:
-			var enemy_id: String = _nearest_enemy_id()
-			var threat: Vector3 = _position_of(enemy_id)
+			var threat: Vector3 = _position_of(_nearest_enemy_id())
 			var away: Vector3 = player.global_position - threat
 			if away.length() < 0.001:
 				away = Vector3(rng.randf_range(-1.0, 1.0), 0.0, rng.randf_range(-1.0, 1.0))
@@ -100,12 +102,32 @@ func _choose_target() -> void:
 	if stuck_clock > STUCK_TIME:
 		_pick_patrol_target()
 		stuck_clock = 0.0
+	_recompute_path()
+
+func _recompute_path() -> void:
+	if labyrinth == null:
+		current_path = [patrol_target]
+		path_index = 0
+		return
+	current_path = labyrinth.find_path(player.global_position, patrol_target)
+	# get_point_path returns at least the start cell; aim past it.
+	path_index = 1 if current_path.size() > 1 else 0
+
+func _next_waypoint() -> Vector3:
+	while path_index < current_path.size():
+		var wp: Vector3 = current_path[path_index]
+		if Vector2(wp.x - player.global_position.x, wp.z - player.global_position.z).length() < 1.0:
+			path_index += 1
+			continue
+		return wp
+	return patrol_target
 
 func _drive() -> void:
 	if topology == null:
 		player.bot_intent = Vector3.ZERO
 		return
-	var to_target: Vector3 = patrol_target - player.global_position
+	var target: Vector3 = _next_waypoint()
+	var to_target: Vector3 = target - player.global_position
 	to_target.y = 0.0
 	if to_target.length() < 0.05:
 		player.bot_intent = Vector3.ZERO

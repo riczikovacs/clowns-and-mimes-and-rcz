@@ -165,7 +165,7 @@ func _spawn_offline_players() -> void:
 func _attach_bot_ai(node: Node, id: String) -> void:
 	var ai := BotAIScript.new()
 	node.add_child(ai)
-	ai.attach(node, id, rules, topology)
+	ai.attach(node, id, rules, topology, labyrinth)
 
 func _drive_offline_hud() -> void:
 	if rules == null:
