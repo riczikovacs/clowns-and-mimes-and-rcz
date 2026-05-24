@@ -10,6 +10,7 @@ import type {
 } from '@cm/shared';
 import { PROTOCOL_VERSION } from '@cm/shared';
 import { topologyDistance, wrapPosition } from '@cm/shared/topology';
+import { generateWalls, pathCrossesWall, type WallSegment } from '@cm/shared/labyrinth';
 
 const TICK_HZ = 20;
 const TICK_MS = 1000 / TICK_HZ;
@@ -56,8 +57,11 @@ export class Room implements DurableObject {
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private botFillHandle: ReturnType<typeof setTimeout> | null = null;
   private readonly botMinds = new Map<string, BotMind>();
+  private walls: readonly WallSegment[] = [];
 
-  constructor(private readonly state: DurableObjectState) {}
+  constructor(private readonly state: DurableObjectState) {
+    this.walls = generateWalls(this.seed);
+  }
 
   async fetch(req: Request): Promise<Response> {
     if (req.headers.get('upgrade') !== 'websocket') {
@@ -188,6 +192,11 @@ export class Room implements DurableObject {
 
   setTopology(t: Topology): void {
     this.topology = t;
+  }
+
+  setSeed(seed: number): void {
+    this.seed = seed;
+    this.walls = generateWalls(seed);
   }
 
   private detach(ws: WebSocket): void {
@@ -421,7 +430,17 @@ export class Room implements DurableObject {
         x: bot.position.x + dir.x * speed * dt,
         z: bot.position.z + dir.z * speed * dt,
       };
-      bot.position = wrapPosition(next, this.topology, WORLD_WIDTH);
+      if (
+        this.walls.length > 0 &&
+        pathCrossesWall(this.walls, bot.position.x, bot.position.z, next.x, next.z)
+      ) {
+        // Wall in the way - re-roll the patrol target so the bot does not just
+        // keep grinding against the same wall every tick.
+        mind.patrolTarget = this.randomPatrolPoint();
+        mind.patrolUntil = now + BOT_PATROL_RETARGET_MS;
+      } else {
+        bot.position = wrapPosition(next, this.topology, WORLD_WIDTH);
+      }
       bot.yaw = Math.atan2(-dir.x, -dir.z);
 
       if (chasing && target && enemyDist <= TAG_RADIUS && this.canTag(bot, target)) {

@@ -116,7 +116,8 @@ func _recompute_path() -> void:
 func _next_waypoint() -> Vector3:
 	while path_index < current_path.size():
 		var wp: Vector3 = current_path[path_index]
-		if Vector2(wp.x - player.global_position.x, wp.z - player.global_position.z).length() < 1.0:
+		var d: float = topology.distance(player.global_position, wp) if topology != null else Vector2(wp.x - player.global_position.x, wp.z - player.global_position.z).length()
+		if d < 1.0:
 			path_index += 1
 			continue
 		return wp
@@ -127,7 +128,7 @@ func _drive() -> void:
 		player.bot_intent = Vector3.ZERO
 		return
 	var target: Vector3 = _next_waypoint()
-	var to_target: Vector3 = target - player.global_position
+	var to_target: Vector3 = topology.delta(player.global_position, target)
 	to_target.y = 0.0
 	if to_target.length() < 0.05:
 		player.bot_intent = Vector3.ZERO

@@ -1,5 +1,7 @@
 import type { Topology, Vec2 } from './protocol.ts';
 
+export const WORLD_WIDTH = 80;
+
 /**
  * Wrap a position into the canonical domain for the topology.
  * The domain is the centered square [-w/2, w/2] x [-w/2, w/2].

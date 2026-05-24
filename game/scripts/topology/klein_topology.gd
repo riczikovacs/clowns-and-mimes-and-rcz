@@ -24,6 +24,22 @@ func distance(a: Vector3, b: Vector3) -> float:
 	var dz := _wrapped_delta(a.z, bz)
 	return Vector2(dx, dz).length()
 
+func delta(from: Vector3, to: Vector3) -> Vector3:
+	var dx := _wrapped_delta(from.x, to.x)
+	var flipped := absf(from.x - to.x) > WIDTH / 2.0
+	var bz: float = -to.z if flipped else to.z
+	var dz := _wrapped_delta(from.z, bz)
+	return Vector3(dx, 0.0, dz)
+
+func wraps_x() -> bool:
+	return true
+
+func wraps_z() -> bool:
+	return true
+
+func flips_z_on_x_wrap() -> bool:
+	return true
+
 func _wrapped_delta(a: float, b: float) -> float:
 	var d := fposmod(b - a, WIDTH)
 	if d > WIDTH / 2.0:
