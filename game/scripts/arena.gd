@@ -12,6 +12,7 @@ const TopologyScript := preload("res://scripts/topology/topology.gd")
 const TopologyFactory := preload("res://scripts/topology/topology_factory.gd")
 const BotAIScript := preload("res://scripts/bot_ai.gd")
 const AssetPaths := preload("res://scripts/asset_paths.gd")
+const IN_GAME_MENU := preload("res://scenes/in_game_menu.tscn")
 
 const BOT_COUNT_PER_TEAM := 3
 const SPAWN_RADIUS := 2.5
@@ -30,17 +31,37 @@ var labyrinth: Node3D = null
 var rules: Node = null
 var player_nodes: Dictionary = {}
 var contact_cooldowns: Dictionary = {}
+var menu: CanvasLayer = null
 
 func _ready() -> void:
 	topology = TopologyFactory.from_string(GameState.topology_as_string())
 	_build_labyrinth()
 	_setup_rules()
 	_spawn_players()
+	_setup_menu()
 	hud.play_again_requested.connect(_on_play_again)
 	hud.lobby_requested.connect(_on_back_to_menu)
 	hud.set_sprint(100.0)
 	hud.set_countdown_seconds(10.0)
 	rules.start(topology)
+
+func _setup_menu() -> void:
+	menu = IN_GAME_MENU.instantiate()
+	add_child(menu)
+	menu.resume_requested.connect(_on_menu_resume)
+	menu.quit_to_menu_requested.connect(_on_menu_quit)
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_pause") and not menu.visible:
+		menu.open()
+		get_viewport().set_input_as_handled()
+
+func _on_menu_resume() -> void:
+	menu.close()
+
+func _on_menu_quit() -> void:
+	menu.close()
+	_on_back_to_menu()
 
 func _build_labyrinth() -> void:
 	var node: Node3D = LABYRINTH.instantiate()
