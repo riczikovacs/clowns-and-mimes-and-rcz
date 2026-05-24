@@ -1,0 +1,23 @@
+name = "cm-matchmaker"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ROOM_WORKER = "cm-room"
+
+[[kv_namespaces]]
+binding = "LOBBY_CODES"
+id = "placeholder_kv_id"
+
+[env.dev]
+name = "cm-matchmaker-dev"
+vars = { ROOM_WORKER = "cm-room-dev", ENV = "dev" }
+
+[env.staging]
+name = "cm-matchmaker-staging"
+vars = { ROOM_WORKER = "cm-room-staging", ENV = "staging" }
+
+[env.production]
+name = "cm-matchmaker"
+vars = { ROOM_WORKER = "cm-room", ENV = "production" }
