@@ -1,5 +1,4 @@
-class_name KleinTopology
-extends Topology
+extends "res://scripts/topology/topology.gd"
 
 ## Klein bottle: X axis wraps with a Z flip, Z axis wraps without flip.
 

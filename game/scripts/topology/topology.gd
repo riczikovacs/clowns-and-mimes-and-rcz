@@ -1,4 +1,3 @@
-class_name Topology
 extends RefCounted
 
 ## Base class for topology adapters. A topology wraps positions and computes

@@ -6,17 +6,17 @@ extends SceneTree
 
 const TestCase := preload("res://tests/test_case.gd")
 
-const TEST_SCRIPTS := [
+const TEST_SCRIPTS: Array[String] = [
 	"res://tests/test_topology.gd",
 	"res://tests/test_labyrinth.gd",
 	"res://tests/test_username_generator.gd",
 ]
 
 func _initialize() -> void:
-	var total_pass := 0
-	var total_fail := 0
+	var total_pass: int = 0
+	var total_fail: int = 0
 	for path in TEST_SCRIPTS:
-		var script: Script = load(path)
+		var script: GDScript = load(path) as GDScript
 		if script == null:
 			push_error("could not load %s" % path)
 			total_fail += 1

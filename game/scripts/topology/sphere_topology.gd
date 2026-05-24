@@ -1,5 +1,4 @@
-class_name SphereTopology
-extends Topology
+extends "res://scripts/topology/topology.gd"
 
 ## Stereographic-style sphere: the canonical domain is a disk. Outside the disk
 ## positions reflect back to their antipode, modeling a finite spherical surface.

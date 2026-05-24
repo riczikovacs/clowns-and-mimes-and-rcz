@@ -1,23 +1,24 @@
-class_name Labyrinth
 extends Node3D
 
 ## Symmetric labyrinth with concentric ring regions. Walls are deterministic
 ## given a seed. Connectors between adjacent rings alternate orientation so
 ## players cannot run straight through the maze.
 
+const TopologyScript := preload("res://scripts/topology/topology.gd")
+
 const WALL_HEIGHT := 6.0
 const WALL_THICKNESS := 0.4
 const SYMMETRY_ORDER := 12
-const RING_RADII := [6.0, 12.0, 18.0, 24.0, 30.0, 36.0]
+const RING_RADII: Array[float] = [6.0, 12.0, 18.0, 24.0, 30.0, 36.0]
 const CENTER_SQUARE_SIZE := 4.0
 
 var seed_value: int = 0
-var topology: Topology
+var topology: TopologyScript
 
 var walls_root: Node3D
 var floor_node: MeshInstance3D
 
-func build(rng_seed: int, top: Topology) -> void:
+func build(rng_seed: int, top: TopologyScript) -> void:
 	seed_value = rng_seed
 	topology = top
 	_resolve_children()
@@ -42,7 +43,7 @@ func _resolve_children() -> void:
 
 func _ensure_floor() -> void:
 	var plane := PlaneMesh.new()
-	plane.size = Vector2(Topology.WIDTH, Topology.WIDTH)
+	plane.size = Vector2(TopologyScript.WIDTH, TopologyScript.WIDTH)
 	floor_node.mesh = plane
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.09, 0.09, 0.11)
@@ -61,8 +62,8 @@ func _build_ring(ring_index: int, rng: RandomNumberGenerator) -> void:
 	for s in segments:
 		if gap_indices.has(s):
 			continue
-		var start_angle := TAU * (float(s) / float(segments))
-		var end_angle := TAU * (float(s + 1) / float(segments))
+		var start_angle: float = TAU * (float(s) / float(segments))
+		var end_angle: float = TAU * (float(s + 1) / float(segments))
 		_add_arc_wall(radius, start_angle, end_angle)
 
 func _gaps_for_ring(ring_index: int) -> int:
@@ -72,11 +73,11 @@ func _gaps_for_ring(ring_index: int) -> int:
 func _choose_gap_indices(
 	segments: int, gap_count: int, ring_index: int, rng: RandomNumberGenerator
 ) -> Array[int]:
-	# Even rings start at offset 0, odd rings stagger by half a segment so the
+	# Even rings start at offset 0, odd rings stagger by one segment so the
 	# connectors between rings do not line up. This produces the alternating
 	# connector pattern.
-	var stagger := 1 if ring_index % 2 == 1 else 0
-	var step := max(1, segments / gap_count)
+	var stagger: int = 1 if ring_index % 2 == 1 else 0
+	var step: int = max(1, segments / gap_count)
 	var indices: Array[int] = []
 	for k in gap_count:
 		indices.append((k * step + stagger + rng.randi() % 2) % segments)
@@ -85,19 +86,21 @@ func _choose_gap_indices(
 func _add_arc_wall(radius: float, start_angle: float, end_angle: float) -> void:
 	var subdivisions := 4
 	for i in subdivisions:
-		var a0 := lerp(start_angle, end_angle, float(i) / subdivisions)
-		var a1 := lerp(start_angle, end_angle, float(i + 1) / subdivisions)
-		var mid := (a0 + a1) * 0.5
+		var t0: float = float(i) / float(subdivisions)
+		var t1: float = float(i + 1) / float(subdivisions)
+		var a0: float = lerpf(start_angle, end_angle, t0)
+		var a1: float = lerpf(start_angle, end_angle, t1)
+		var mid: float = (a0 + a1) * 0.5
 		var p := Vector3(cos(mid) * radius, WALL_HEIGHT / 2.0, sin(mid) * radius)
-		var length := 2.0 * radius * sin((a1 - a0) / 2.0)
-		var wall := _make_wall(length)
+		var seg_length: float = 2.0 * radius * sin((a1 - a0) / 2.0)
+		var wall := _make_wall(seg_length)
 		wall.position = p
-		wall.rotation = Vector3(0, -mid - PI / 2.0, 0)
+		wall.rotation = Vector3(0.0, -mid - PI / 2.0, 0.0)
 		walls_root.add_child(wall)
 
-func _make_wall(length: float) -> MeshInstance3D:
+func _make_wall(seg_length: float) -> MeshInstance3D:
 	var mesh := BoxMesh.new()
-	mesh.size = Vector3(length, WALL_HEIGHT, WALL_THICKNESS)
+	mesh.size = Vector3(seg_length, WALL_HEIGHT, WALL_THICKNESS)
 	var node := MeshInstance3D.new()
 	node.mesh = mesh
 	var mat := StandardMaterial3D.new()

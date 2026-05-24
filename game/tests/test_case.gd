@@ -1,4 +1,3 @@
-class_name TestCase
 extends RefCounted
 
 ## Tiny test base. Tests inherit this and call assert_eq, assert_approx,
@@ -15,7 +14,7 @@ func assert_false(condition: bool, message: String = "") -> void:
 	if condition:
 		failures.append("assert_false failed: %s" % message)
 
-func assert_eq(actual, expected, message: String = "") -> void:
+func assert_eq(actual: Variant, expected: Variant, message: String = "") -> void:
 	if actual != expected:
 		failures.append("assert_eq failed: %s actual=%s expected=%s" % [message, actual, expected])
 

@@ -1,5 +1,4 @@
-class_name PlaneTopology
-extends Topology
+extends "res://scripts/topology/topology.gd"
 
 func kind() -> Kind:
 	return Kind.PLANE

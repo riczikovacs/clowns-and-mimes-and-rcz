@@ -7,6 +7,9 @@ signal requested_screen(screen: String)
 
 const PLAYER := preload("res://scenes/player.tscn")
 const LABYRINTH := preload("res://scenes/labyrinth.tscn")
+const LabyrinthScript := preload("res://scripts/labyrinth.gd")
+const TopologyScript := preload("res://scripts/topology/topology.gd")
+const TopologyFactory := preload("res://scripts/topology/topology_factory.gd")
 
 @onready var world: Node3D = $World
 @onready var spawn: Marker3D = $World/Spawn
@@ -14,8 +17,8 @@ const LABYRINTH := preload("res://scenes/labyrinth.tscn")
 @onready var hud: CanvasLayer = $HUD
 
 var local_player: Node = null
-var topology: Topology
-var labyrinth: Labyrinth = null
+var topology: TopologyScript
+var labyrinth: Node3D = null
 
 func _ready() -> void:
 	topology = TopologyFactory.from_string(GameState.topology_as_string())
@@ -28,9 +31,9 @@ func _ready() -> void:
 	_run_pregame_countdown()
 
 func _build_labyrinth() -> void:
-	var node: Node = LABYRINTH.instantiate()
+	var node: Node3D = LABYRINTH.instantiate()
 	labyrinth_holder.add_child(node)
-	labyrinth = node as Labyrinth
+	labyrinth = node
 	var rng_seed := _derive_seed()
 	labyrinth.build(rng_seed, topology)
 
