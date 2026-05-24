@@ -433,20 +433,22 @@ const clownAvatar = `${base}avatars/clown.png`;
           <article class="topology">
             <svg viewBox="0 0 160 120" aria-hidden="true">
               <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
-                <!-- left wall of the bottle body -->
-                <path d="M 36 36 L 36 96 Q 36 108 50 108 L 86 108 Q 98 108 98 96 L 98 78" />
-                <!-- right wall lower (down to the hole where the neck enters) -->
-                <path d="M 98 64 L 98 36" />
-                <!-- top opening curve -->
-                <path d="M 36 36 Q 36 26 50 26 L 86 26 Q 98 26 98 36" />
-                <!-- mouth ellipse -->
-                <ellipse cx="67" cy="26" rx="14" ry="3.5" />
-                <!-- neck arcs up and right, then curves down and back to the hole on the right -->
-                <path d="M 58 23 Q 58 6 96 6 Q 134 6 134 46 Q 134 70 110 70 L 98 70" />
-                <!-- dashed continuation of the neck inside the body -->
-                <path d="M 98 70 Q 84 70 82 84 Q 80 96 70 96" stroke-dasharray="4 4" opacity="0.7" />
-                <!-- small ellipse at the inside terminus -->
-                <ellipse cx="70" cy="96" rx="5" ry="2" stroke-dasharray="2 2" opacity="0.7" />
+                <!-- Fundamental polygon: a square whose edges are identified -->
+                <rect x="36" y="22" width="88" height="76" rx="4" />
+                <!-- Top edge: single arrow rightward -->
+                <line x1="60" y1="22" x2="100" y2="22" stroke-width="2.6" />
+                <path d="M 92 16 L 100 22 L 92 28" stroke-width="2.6" />
+                <!-- Bottom edge: matching single arrow rightward (top/bottom identified) -->
+                <line x1="60" y1="98" x2="100" y2="98" stroke-width="2.6" />
+                <path d="M 92 92 L 100 98 L 92 104" stroke-width="2.6" />
+                <!-- Left edge: double chevron pointing up -->
+                <line x1="36" y1="78" x2="36" y2="42" stroke-width="2.6" />
+                <path d="M 30 50 L 36 42 L 42 50" stroke-width="2.6" />
+                <path d="M 30 58 L 36 50 L 42 58" stroke-width="2.6" />
+                <!-- Right edge: double chevron pointing DOWN (opposite = the flip) -->
+                <line x1="124" y1="42" x2="124" y2="78" stroke-width="2.6" />
+                <path d="M 118 70 L 124 78 L 130 70" stroke-width="2.6" />
+                <path d="M 118 62 L 124 70 L 130 62" stroke-width="2.6" />
               </g>
             </svg>
             <h3>Klein bottle</h3>
