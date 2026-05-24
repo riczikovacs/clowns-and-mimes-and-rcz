@@ -29,6 +29,14 @@ const MAX_TICK_TRAVEL = SPRINT_SPEED * 1.5; // anti-cheat: clamp per-tick displa
 const TURN_FIRST_MS = 30_000;
 const TURN_STEP_MS = 30_000;
 const TURN_CAP_MS = 5 * 60_000;
+const BOT_FILL_DELAY_MS = 3_000;
+const BOT_VISION_RADIUS = 16;
+const BOT_PATROL_RETARGET_MS = 4_000;
+
+interface BotMind {
+  patrolTarget: { x: number; z: number };
+  patrolUntil: number;
+}
 
 interface Connection {
   ws: WebSocket;
@@ -46,6 +54,8 @@ export class Room implements DurableObject {
   private roundNumber = 0;
   private firstTeam: Team = 'mime';
   private tickHandle: ReturnType<typeof setInterval> | null = null;
+  private botFillHandle: ReturnType<typeof setTimeout> | null = null;
+  private readonly botMinds = new Map<string, BotMind>();
 
   constructor(private readonly state: DurableObjectState) {}
 
@@ -133,7 +143,19 @@ export class Room implements DurableObject {
     this.broadcast({ t: 'event', kind: { kind: 'phase', phase: this.phase } });
     if (this.phase === 'filling' && this.humanPlayers().length >= 2 && !this.tickHandle) {
       this.startCountdown();
+    } else if (this.phase === 'filling' && this.botFillHandle === null && !this.tickHandle) {
+      this.scheduleBotFill();
     }
+  }
+
+  /** Schedule a one-shot bot fill so a solo joiner gets opponents within a few seconds. */
+  private scheduleBotFill(): void {
+    this.botFillHandle = setTimeout(() => {
+      this.botFillHandle = null;
+      if (this.phase !== 'filling' || this.tickHandle) return;
+      this.fillBots();
+      this.startCountdown();
+    }, BOT_FILL_DELAY_MS);
   }
 
   /** Fill empty slots with bots up to TEAM_TARGET per team. Idempotent. */
@@ -151,8 +173,17 @@ export class Room implements DurableObject {
           frozen: false,
           sprintEnergy: MAX_SPRINT,
         });
+        this.botMinds.set(id, { patrolTarget: this.randomPatrolPoint(), patrolUntil: 0 });
       }
     }
+  }
+
+  private randomPatrolPoint(): { x: number; z: number } {
+    const half = WORLD_WIDTH / 2;
+    return {
+      x: (Math.random() - 0.5) * 2 * (half - 4),
+      z: (Math.random() - 0.5) * 2 * (half - 4),
+    };
   }
 
   setTopology(t: Topology): void {
@@ -167,8 +198,24 @@ export class Room implements DurableObject {
     this.lastInputs.delete(conn.playerId);
     if (this.humanPlayers().length === 0) {
       this.stopTick();
+      this.cancelBotFill();
+      this.clearBots();
       this.phase = 'filling';
     }
+  }
+
+  private cancelBotFill(): void {
+    if (this.botFillHandle !== null) {
+      clearTimeout(this.botFillHandle);
+      this.botFillHandle = null;
+    }
+  }
+
+  private clearBots(): void {
+    for (const id of [...this.botMinds.keys()]) {
+      this.players.delete(id);
+    }
+    this.botMinds.clear();
   }
 
   private onInput(ws: WebSocket, input: PlayerInput): void {
@@ -307,6 +354,11 @@ export class Room implements DurableObject {
   /** Applies player inputs with anti-cheat distance clamping. */
   private simulate(): void {
     const dt = TICK_MS / 1000;
+    this.simulateHumans(dt);
+    this.simulateBots(dt);
+  }
+
+  private simulateHumans(dt: number): void {
     for (const [id, input] of this.lastInputs) {
       const p = this.players.get(id);
       if (!p || p.bot || p.frozen) continue;
@@ -329,6 +381,80 @@ export class Room implements DurableObject {
         MAX_SPRINT,
       );
     }
+  }
+
+  private simulateBots(dt: number): void {
+    const active = this.activeTurnTeam();
+    const now = Date.now();
+    for (const bot of this.botPlayers()) {
+      if (bot.frozen) continue;
+      const mind = this.botMinds.get(bot.id) ?? {
+        patrolTarget: this.randomPatrolPoint(),
+        patrolUntil: 0,
+      };
+      this.botMinds.set(bot.id, mind);
+
+      const target = this.nearestVisibleEnemy(bot);
+      const enemyDist = target
+        ? topologyDistance(bot.position, target.position, this.topology, WORLD_WIDTH)
+        : Infinity;
+      const chasing = target !== null && enemyDist < BOT_VISION_RADIUS && active === bot.team;
+      const fleeing =
+        target !== null && enemyDist < BOT_VISION_RADIUS && active && active !== bot.team;
+
+      let dir = { x: 0, z: 0 };
+      if (chasing && target) {
+        dir = unitDelta(bot.position, target.position);
+      } else if (fleeing && target) {
+        const away = unitDelta(target.position, bot.position);
+        dir = away;
+      } else {
+        if (now >= mind.patrolUntil || nearTarget(bot.position, mind.patrolTarget)) {
+          mind.patrolTarget = this.randomPatrolPoint();
+          mind.patrolUntil = now + BOT_PATROL_RETARGET_MS;
+        }
+        dir = unitDelta(bot.position, mind.patrolTarget);
+      }
+
+      const speed = WALK_SPEED;
+      const next = {
+        x: bot.position.x + dir.x * speed * dt,
+        z: bot.position.z + dir.z * speed * dt,
+      };
+      bot.position = wrapPosition(next, this.topology, WORLD_WIDTH);
+      bot.yaw = Math.atan2(-dir.x, -dir.z);
+
+      if (chasing && target && enemyDist <= TAG_RADIUS && this.canTag(bot, target)) {
+        target.frozen = true;
+        this.broadcast({
+          t: 'event',
+          kind: { kind: 'tagged', attackerId: bot.id, victimId: target.id, team: bot.team },
+        });
+        this.checkWin();
+      }
+    }
+  }
+
+  private nearestVisibleEnemy(bot: PlayerState): PlayerState | null {
+    let best: PlayerState | null = null;
+    let bestDist = Infinity;
+    for (const other of this.players.values()) {
+      if (other.id === bot.id) continue;
+      if (other.team === bot.team) continue;
+      if (other.frozen) continue;
+      const d = topologyDistance(bot.position, other.position, this.topology, WORLD_WIDTH);
+      if (d < bestDist) {
+        bestDist = d;
+        best = other;
+      }
+    }
+    return best;
+  }
+
+  private activeTurnTeam(): Team | null {
+    if (this.phase === 'turn_mime') return 'mime';
+    if (this.phase === 'turn_clown') return 'clown';
+    return null;
   }
 
   private broadcastDelta(): void {
@@ -381,4 +507,23 @@ export class Room implements DurableObject {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
+}
+
+function unitDelta(
+  from: { x: number; z: number },
+  to: { x: number; z: number },
+): { x: number; z: number } {
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-4) return { x: 0, z: 0 };
+  return { x: dx / len, z: dz / len };
+}
+
+function nearTarget(
+  from: { x: number; z: number },
+  to: { x: number; z: number },
+  threshold = 1.4,
+): boolean {
+  return Math.hypot(to.x - from.x, to.z - from.z) <= threshold;
 }
