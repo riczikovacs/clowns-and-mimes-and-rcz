@@ -65,15 +65,9 @@ jobs:
         run: pnpm --filter @cm/e2e exec playwright install --with-deps chromium firefox webkit
       - name: Build website
         run: pnpm --filter website build
-      - name: Serve and test
-        env:
-          WEBSITE_URL: http://localhost:4321
-        run: |
-          pnpm --filter website preview --port 4321 --host 127.0.0.1 &
-          SERVER_PID=$!
-          trap "kill $SERVER_PID 2>/dev/null || true" EXIT
-          until curl -fsS http://localhost:4321 >/dev/null; do sleep 0.5; done
-          pnpm --filter @cm/e2e test
+      - name: Run Playwright (server managed by config)
+        timeout-minutes: 8
+        run: pnpm --filter @cm/e2e test
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
