@@ -1,54 +1,294 @@
 ---
 const title = 'Clowns and Mimes, on Miscellaneous Topological Spaces... IN THE DARK';
+const githubUrl = 'https://github.com/sean-reid/clowns-and-mimes';
+const releasesApi = 'https://api.github.com/repos/sean-reid/clowns-and-mimes/releases/latest';
 ---
+
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="dark" />
     <title>{title}</title>
-    <meta name="description" content="A team tag game played on labyrinths that wrap in unusual ways." />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23111'/%3E%3C/svg%3E" />
+    <meta
+      name="description"
+      content="A team tag game played on a dimly lit labyrinth that wraps in unusual ways."
+    />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content="Tag every opponent before they tag you. The arena might be a sphere, a torus, or a Klein bottle." />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230c0c0e'/%3E%3Ccircle cx='5' cy='8' r='3.2' fill='%23f5f5f5'/%3E%3Ccircle cx='11' cy='8' r='3.2' fill='%23e63946'/%3E%3C/svg%3E"
+    />
     <style>
-      :root { color-scheme: dark; }
-      body { margin: 0; font-family: system-ui, sans-serif; background: #0c0c0e; color: #eee; }
-      main { max-width: 760px; margin: 0 auto; padding: 4rem 1.25rem; }
-      h1 { font-size: clamp(1.6rem, 4vw, 2.4rem); line-height: 1.15; margin-bottom: 1rem; }
-      h2 { margin-top: 2.5rem; }
-      a { color: #cfd; }
-      .lede { color: #bbb; font-size: 1.1rem; }
-      .download-buttons { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.5rem 0; }
-      .download-buttons a { background: #1a1a1d; padding: 0.7rem 1.1rem; border-radius: 0.5rem; text-decoration: none; border: 1px solid #2a2a2e; }
-      footer { color: #777; margin-top: 4rem; font-size: 0.9rem; }
+      :root {
+        color-scheme: dark;
+        --bg: #0c0c0e;
+        --panel: #16161a;
+        --border: #2a2a2e;
+        --text: #f1f1f1;
+        --muted: #9a9aa3;
+        --accent: #f5d142;
+        --clown: #e63946;
+        --mime: #f5f5f5;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
+        background: radial-gradient(circle at 50% 20%, #1a1a1f 0%, var(--bg) 60%);
+        color: var(--text);
+        line-height: 1.55;
+      }
+      a { color: var(--accent); }
+      header, section, footer {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 0 1.25rem;
+      }
+      header {
+        padding-top: 3.5rem;
+        padding-bottom: 1.5rem;
+      }
+      h1 {
+        font-size: clamp(1.7rem, 4.5vw, 3rem);
+        line-height: 1.1;
+        margin: 0 0 0.75rem;
+        letter-spacing: -0.02em;
+      }
+      .lede {
+        color: var(--muted);
+        font-size: clamp(1rem, 1.6vw, 1.2rem);
+        max-width: 56ch;
+      }
+      .heads {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        margin-bottom: 2.25rem;
+      }
+      .head {
+        width: clamp(48px, 8vw, 72px);
+        height: clamp(48px, 8vw, 72px);
+        border-radius: 50%;
+        box-shadow: 0 0 0 4px var(--border) inset;
+      }
+      .head.mime { background: var(--mime); }
+      .head.clown { background: var(--clown); }
+      .downloads {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.75rem;
+        margin: 1rem 0 2rem;
+      }
+      .download {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        padding: 1rem 1.1rem;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 0.75rem;
+        text-decoration: none;
+        color: var(--text);
+        transition: transform 80ms ease, border-color 80ms ease;
+      }
+      .download:hover { transform: translateY(-2px); border-color: var(--accent); }
+      .download[data-recommended='true'] {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px var(--accent) inset;
+      }
+      .download .platform { font-weight: 600; font-size: 1.05rem; }
+      .download .file { color: var(--muted); font-size: 0.85rem; }
+      h2 {
+        margin: 3rem 0 0.75rem;
+        font-size: 1.5rem;
+        letter-spacing: -0.01em;
+      }
+      .rules {
+        display: grid;
+        gap: 0.75rem;
+        padding-left: 1.2rem;
+      }
+      .topologies {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 1rem;
+        margin: 1rem 0;
+      }
+      .topology {
+        padding: 1rem;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 0.75rem;
+      }
+      .topology svg {
+        width: 100%;
+        height: 96px;
+        display: block;
+        margin-bottom: 0.6rem;
+      }
+      .topology h3 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+      .topology p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+      footer {
+        padding: 3rem 1.25rem 4rem;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      footer a { color: var(--muted); }
+      @media (max-width: 480px) {
+        header { padding-top: 2rem; }
+      }
     </style>
   </head>
   <body>
-    <main>
-      <h1>{title}</h1>
-      <p class="lede">A team tag game played on a dimly lit labyrinth that wraps in unusual ways.</p>
-
-      <h2>Download</h2>
-      <div class="download-buttons">
-        <a id="dl-windows" href="https://github.com/sean-reid/clowns-and-mimes/releases/latest">Windows</a>
-        <a id="dl-macos" href="https://github.com/sean-reid/clowns-and-mimes/releases/latest">macOS</a>
-        <a id="dl-linux" href="https://github.com/sean-reid/clowns-and-mimes/releases/latest">Linux</a>
+    <header>
+      <div class="heads" aria-hidden="true">
+        <div class="head mime"></div>
+        <div class="head clown"></div>
       </div>
+      <h1>{title}</h1>
+      <p class="lede">
+        A team tag game played on a dimly lit labyrinth that wraps in unusual ways. You are a mime or
+        a clown. Freeze every opponent before they freeze you. The arena might be a sphere, a torus,
+        or a Klein bottle.
+      </p>
+    </header>
 
-      <h2>How to play</h2>
-      <ol>
-        <li>Pick host, code, or strangers.</li>
-        <li>Everyone spawns in the center. Sixty seconds to move freely.</li>
+    <section aria-labelledby="download">
+      <h2 id="download">Download</h2>
+      <div class="downloads">
+        <a id="dl-windows" class="download" href={`${githubUrl}/releases/latest`}>
+          <span class="platform">Windows</span>
+          <span class="file" id="dl-windows-file">latest .exe</span>
+        </a>
+        <a id="dl-macos" class="download" href={`${githubUrl}/releases/latest`}>
+          <span class="platform">macOS</span>
+          <span class="file" id="dl-macos-file">latest .dmg</span>
+        </a>
+        <a id="dl-linux" class="download" href={`${githubUrl}/releases/latest`}>
+          <span class="platform">Linux</span>
+          <span class="file" id="dl-linux-file">latest AppImage</span>
+        </a>
+      </div>
+    </section>
+
+    <section aria-labelledby="how">
+      <h2 id="how">How to play</h2>
+      <ol class="rules">
+        <li>Pick host, code, or strangers from the main menu.</li>
+        <li>Everyone spawns in the center square. Sixty seconds to walk the maze without tagging.</li>
         <li>Turns alternate between the mime team and the clown team. Tag opponents during your turn to freeze them.</li>
-        <li>Win by freezing every opponent. Lose if your team is all frozen.</li>
+        <li>A frozen teammate can be unfrozen by another teammate who walks up and tags them.</li>
+        <li>Win by freezing every opponent. Lose if your whole team is frozen.</li>
       </ol>
+    </section>
 
-      <h2>Topologies</h2>
-      <p>The arena is a finite plane, a torus, a Klein bottle, or a sphere. The host picks in private games. Random in open lobbies.</p>
+    <section aria-labelledby="topology">
+      <h2 id="topology">Topologies</h2>
+      <p style="color: var(--muted); max-width: 56ch;">
+        The arena is one of these. In private games the host picks. In open lobbies it is random.
+      </p>
+      <div class="topologies">
+        <article class="topology">
+          <svg viewBox="0 0 120 80" aria-hidden="true">
+            <rect x="10" y="10" width="100" height="60" fill="none" stroke="#bbb" stroke-width="2" />
+          </svg>
+          <h3>Plane</h3>
+          <p>Finite square arena. Hard walls at the edges.</p>
+        </article>
+        <article class="topology">
+          <svg viewBox="0 0 120 80" aria-hidden="true">
+            <ellipse cx="60" cy="40" rx="48" ry="28" fill="none" stroke="#bbb" stroke-width="2" />
+            <ellipse cx="60" cy="40" rx="48" ry="10" fill="none" stroke="#bbb" stroke-width="1.2" stroke-dasharray="4 3" />
+          </svg>
+          <h3>Torus</h3>
+          <p>Both axes wrap. Walk off one side, come out the opposite.</p>
+        </article>
+        <article class="topology">
+          <svg viewBox="0 0 120 80" aria-hidden="true">
+            <path
+              d="M20 40 C20 10 100 10 100 40 C100 70 60 70 60 40 C60 10 20 10 20 40 Z"
+              fill="none"
+              stroke="#bbb"
+              stroke-width="2"
+            />
+          </svg>
+          <h3>Klein bottle</h3>
+          <p>One axis wraps with a flip. The other wraps normally.</p>
+        </article>
+        <article class="topology">
+          <svg viewBox="0 0 120 80" aria-hidden="true">
+            <circle cx="60" cy="40" r="30" fill="none" stroke="#bbb" stroke-width="2" />
+            <path d="M30 40 Q60 25 90 40" fill="none" stroke="#bbb" stroke-width="1.2" stroke-dasharray="3 2" />
+            <path d="M30 40 Q60 55 90 40" fill="none" stroke="#bbb" stroke-width="1.2" />
+            <path d="M60 10 L60 70" fill="none" stroke="#bbb" stroke-width="0.8" stroke-dasharray="2 2" />
+          </svg>
+          <h3>Sphere</h3>
+          <p>Walk a great circle. There is no edge to fall off.</p>
+        </article>
+      </div>
+    </section>
 
-      <h2>Source</h2>
-      <p><a href="https://github.com/sean-reid/clowns-and-mimes">GitHub</a></p>
+    <section aria-labelledby="controls">
+      <h2 id="controls">Controls</h2>
+      <ul class="rules">
+        <li><strong>WASD</strong> to walk</li>
+        <li><strong>Mouse</strong> to look</li>
+        <li><strong>Hold Shift</strong> to sprint until your stamina runs out</li>
+        <li><strong>Left click</strong> to tag or unfreeze when you are close enough</li>
+        <li><strong>Esc</strong> to release the cursor</li>
+      </ul>
+    </section>
 
-      <footer>MIT licensed. Built by Sean Reid.</footer>
-    </main>
+    <footer>
+      <p>
+        Open source on <a href={githubUrl}>GitHub</a>. MIT licensed. Built by Sean Reid.
+        Found a bug? <a href={`${githubUrl}/issues/new/choose`}>File an issue.</a>
+      </p>
+    </footer>
+
+    <script type="module" define:vars={{ releasesApi, githubUrl }}>
+      function platform() {
+        const ua = navigator.userAgent.toLowerCase();
+        if (ua.includes('mac')) return 'macos';
+        if (ua.includes('linux')) return 'linux';
+        return 'windows';
+      }
+
+      function recommendCurrent() {
+        const id = `dl-${platform()}`;
+        const el = document.getElementById(id);
+        if (el) el.setAttribute('data-recommended', 'true');
+      }
+
+      async function hydrateFromLatestRelease() {
+        try {
+          const res = await fetch(releasesApi, { headers: { accept: 'application/vnd.github+json' } });
+          if (!res.ok) return;
+          const data = await res.json();
+          const assets = Array.isArray(data.assets) ? data.assets : [];
+          const updates = [
+            { id: 'dl-windows', fileId: 'dl-windows-file', match: /windows|\.exe/i },
+            { id: 'dl-macos', fileId: 'dl-macos-file', match: /mac|\.dmg|\.zip/i },
+            { id: 'dl-linux', fileId: 'dl-linux-file', match: /linux|appimage/i },
+          ];
+          for (const { id, fileId, match } of updates) {
+            const asset = assets.find((a) => match.test(a.name ?? ''));
+            if (!asset) continue;
+            const el = document.getElementById(id);
+            const fileEl = document.getElementById(fileId);
+            if (el && asset.browser_download_url) el.href = asset.browser_download_url;
+            if (fileEl && asset.name) fileEl.textContent = asset.name;
+          }
+        } catch {
+          /* keep static fallbacks */
+        }
+      }
+
+      recommendCurrent();
+      hydrateFromLatestRelease();
+    </script>
   </body>
 </html>
