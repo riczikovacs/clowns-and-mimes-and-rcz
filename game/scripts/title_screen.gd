@@ -41,7 +41,9 @@ func _start_theme() -> void:
 	theme_player = AudioStreamPlayer.new()
 	theme_player.bus = "Music"
 	theme_player.stream = stream
-	if stream is AudioStreamOggVorbis:
+	if stream is AudioStreamMP3:
+		(stream as AudioStreamMP3).loop = true
+	elif stream is AudioStreamOggVorbis:
 		(stream as AudioStreamOggVorbis).loop = true
 	add_child(theme_player)
 	theme_player.play()

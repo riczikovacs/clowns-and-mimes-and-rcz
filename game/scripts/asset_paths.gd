@@ -7,9 +7,10 @@ extends Node
 const MIME_TEXTURE := "res://assets/textures/mime_head.png"
 const CLOWN_TEXTURE := "res://assets/textures/clown_head.png"
 
-const THEME_AUDIO := "res://assets/audio/oompa_theme.ogg"
-const LOSE_STINGER := "res://assets/audio/womp_womp.ogg"
-const WIN_STINGER := "res://assets/audio/maniacal_laugh.ogg"
+const THEME_AUDIO := "res://assets/audio/oompa_theme.mp3"
+const LOSE_STINGER := "res://assets/audio/womp_womp.mp3"
+const WIN_STINGER := "res://assets/audio/maniacal_laugh.mp3"
+const FOOTSTEPS := "res://assets/audio/footsteps.mp3"
 
 static func try_load_texture(team: String) -> Texture2D:
 	var path: String = MIME_TEXTURE if team == "mime" else CLOWN_TEXTURE
