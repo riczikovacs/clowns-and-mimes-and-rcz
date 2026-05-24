@@ -1,0 +1,14 @@
+node_modules
+dist
+build
+.astro
+.wrangler
+game/.godot
+game/.import
+game/assets
+**/*.tscn
+**/*.tres
+**/*.gd
+**/*.cfg
+**/*.godot
+pnpm-lock.yaml

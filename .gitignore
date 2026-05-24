@@ -1,0 +1,69 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+build/
+.next/
+.astro/
+.wrangler/
+.dev.vars
+*.tsbuildinfo
+
+# Cloudflare
+.wrangler/
+wrangler.toml.bak
+
+# Godot
+game/.godot/
+game/.import/
+game/export.cfg
+game/export_presets.cfg
+game/builds/
+game/*.translation
+game/*.import
+
+# Game export artifacts
+out/
+exports/
+*.pck
+*.exe
+*.dmg
+*.AppImage
+*.deb
+*.zip
+*.tar.gz
+
+# Logs and temp
+*.log
+.cache/
+tmp/
+coverage/
+playwright-report/
+test-results/
+
+# Local secrets
+.env
+.env.local
+.env.*.local
+
+# Agent tooling artifacts that must never be tracked
+.claude/
+CLAUDE.md
+.aider*
+.cursor/

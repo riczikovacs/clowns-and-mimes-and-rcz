@@ -1,0 +1,30 @@
+{
+  "name": "clowns-and-mimes",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Clowns and Mimes, on Miscellaneous Topological Spaces... IN THE DARK",
+  "license": "MIT",
+  "author": "Sean Reid <seanreid.mail@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sean-reid/clowns-and-mimes.git"
+  },
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "lint": "pnpm -r --if-present lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "build": "pnpm -r --if-present build",
+    "dev": "pnpm -r --parallel --if-present dev"
+  },
+  "devDependencies": {
+    "prettier": "3.3.3",
+    "typescript": "5.6.3"
+  }
+}

@@ -1,0 +1,402 @@
+# Architecture
+
+This document is the single source of truth for how the project is built. Other docs are intentionally light and link here for depth.
+
+## Table of contents
+
+- [Goals and constraints](#goals-and-constraints)
+- [Technology choices](#technology-choices)
+- [Monorepo layout](#monorepo-layout)
+- [Game client](#game-client)
+- [Topology system](#topology-system)
+- [Labyrinth generator](#labyrinth-generator)
+- [Audio system](#audio-system)
+- [Bot AI](#bot-ai)
+- [Networking](#networking)
+- [Backend services](#backend-services)
+- [Matchmaking](#matchmaking)
+- [Room lifecycle](#room-lifecycle)
+- [Anti-cheat](#anti-cheat)
+- [Website](#website)
+- [Build and release pipeline](#build-and-release-pipeline)
+- [Environments](#environments)
+- [Observability](#observability)
+- [Budget](#budget)
+- [Open questions](#open-questions)
+
+## Goals and constraints
+
+The game is a 3D team tag game played by 4 to 16 players (humans and bots) on a labyrinth wrapped onto a finite plane, sphere, torus, or Klein bottle. Visibility is intentionally limited. Audio is sparse.
+
+Hard constraints from the project brief:
+
+- Native cross-platform desktop binary. Equal visuals on Windows, macOS, and Linux.
+- Installer ships from a website link. No terminal, no scripts, no build from source for end users.
+- Backend hosted on Cloudflare. Static site on GitHub Pages.
+- Total infrastructure cost under USD 500 per year.
+- Open source, MIT license, monorepo on GitHub, conventional commits, atomic commits, PR workflow.
+- Zero AI fingerprints anywhere in the project.
+
+Performance budget per platform:
+
+- Steady 60 FPS on a 2020-class laptop GPU at 1080p.
+- Network tick rate of 20 Hz for gameplay messages.
+- Round-trip latency tolerated up to 200 ms with client prediction.
+
+## Technology choices
+
+| Layer            | Choice                                        | Reason                                                                                                                                                 |
+| ---------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Game engine      | Godot 4 (GDScript primary, C# optional later) | MIT licensed, no royalties, cross-platform desktop export with parity, mature 3D pipeline, small editor footprint, strong async networking primitives. |
+| Game language    | GDScript                                      | Fast iteration, no compile step, first-class in Godot, sufficient performance for this game's load.                                                    |
+| Backend runtime  | Cloudflare Workers + Durable Objects          | Globally distributed edge compute, native WebSocket hibernation API for low cost, integrated logging, no servers to operate.                           |
+| Backend language | TypeScript                                    | Strict typing for protocol safety. Shared types between Workers and tooling.                                                                           |
+| Static site      | Astro                                         | Ships zero JS by default, fast, simple, easy to publish to GitHub Pages.                                                                               |
+| Test runtime     | Vitest (TS), GUT (Godot), Playwright (web)    | Modern, fast, well-supported.                                                                                                                          |
+| CI/CD            | GitHub Actions                                | Free for public repos, mature ecosystem, native to GitHub.                                                                                             |
+| Package manager  | pnpm with workspaces                          | Fast installs, disk-efficient, first-class workspace support.                                                                                          |
+
+Alternatives considered:
+
+- Unity: licensing risk and Mac/Linux quirks ruled it out for a small open source game.
+- Unreal: oversized for this game's visual scope, large binaries.
+- Bevy (Rust): exciting but young; risk to schedule for a multi-platform shipping game.
+- Bun on Cloudflare: not yet a first-class Workers runtime.
+
+## Monorepo layout
+
+```
+clowns-and-mimes/
+  game/                      Godot 4 project
+    scenes/                  .tscn files
+    scripts/                 .gd files
+    assets/                  textures, audio, fonts
+    addons/                  vendored Godot plugins (GUT for tests)
+    export_presets.cfg       not tracked; generated at build
+    project.godot
+  backend/
+    matchmaker/              Cloudflare Worker entry for matchmaking
+    room/                    Durable Object hosting one game room
+    shared/                  protocol types shared by both
+  website/                   Astro static site
+  tests/
+    e2e/                     Playwright + headless game smoke checks
+  docs/                      Architecture and contributor docs
+  .github/
+    workflows/               CI and release pipelines
+    ISSUE_TEMPLATE/
+  pnpm-workspace.yaml
+  package.json
+  LICENSE
+```
+
+## Game client
+
+```mermaid
+flowchart TB
+  TitleScreen --> MainMenu
+  MainMenu -->|Host| HostFlow[Host private game]
+  MainMenu -->|Code| CodeFlow[Enter join code]
+  MainMenu -->|Strangers| StrangerFlow[Open matchmaking]
+  HostFlow --> Lobby
+  CodeFlow --> Lobby
+  StrangerFlow --> Lobby
+  Lobby -->|matchmaking complete| StartCountdown[10s start countdown]
+  StartCountdown --> Freeroam[60s free roam]
+  Freeroam --> TurnLoop
+  TurnLoop -->|all of one team frozen| EndScreen
+  EndScreen -->|Play again| Lobby
+  EndScreen -->|Return to lobby| MainMenu
+```
+
+The game client is structured around scene composition in Godot:
+
+- `Main.tscn` is the root that swaps the active screen.
+- `TitleScreen.tscn` plays the three-phase title animation and a short oompa loop.
+- `MainMenu.tscn` shows host, code, and strangers options plus username entry.
+- `Lobby.tscn` is the dim center square where players spawn and wait for matchmaking.
+- `Arena.tscn` instantiates a topology scene and the labyrinth.
+- `HUD.tscn` overlays sprint bar, countdown, team status, side log, and frozen overlay.
+
+Player movement is handled by `PlayerController.gd`, a `CharacterBody3D` with:
+
+- WASD for translational movement
+- Mouse look with capture
+- Shift to sprint while sprint energy is above zero
+- Footstep sound emitter modulated by current speed
+
+Sprint energy:
+
+- 100 unit pool, 25 units per second drain while sprinting, 15 units per second regen otherwise.
+- Sprint is unavailable while frozen.
+
+## Topology system
+
+The world is represented as a 2D coordinate grid with topology-specific wrapping rules applied to both physics and rendering. This avoids the cost of true curved-surface rendering while keeping the gameplay feel of unusual topology.
+
+```mermaid
+classDiagram
+  class Topology {
+    +wrap_position(Vector3 p) Vector3
+    +wrap_direction(Vector3 v) Vector3
+    +great_circle_distance(a, b) float
+    +seam_portals() Array
+  }
+  Topology <|-- PlaneTopology
+  Topology <|-- TorusTopology
+  Topology <|-- KleinBottleTopology
+  Topology <|-- SphereTopology
+```
+
+| Topology     | Wrap rule                                                   | Visual seam treatment                                                                                                                                             |
+| ------------ | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plane        | No wrap. Hard walls at edges.                               | None.                                                                                                                                                             |
+| Torus        | X wraps at width, Z wraps at depth.                         | Edge portals render the opposite side of the map.                                                                                                                 |
+| Klein bottle | X wraps with vertical flip, Z wraps with no flip.           | Edge portals on X axis render an inverted copy.                                                                                                                   |
+| Sphere       | Coordinates are spherical. Movement is along great circles. | Curved horizon shader simulates surface curvature. The labyrinth is projected via an octahedron-to-sphere mapping that keeps the symmetric ring structure intact. |
+
+Wrapping is enforced in `Topology.wrap_position` after every physics step. The same `Topology` instance is used by the bot pathfinder so the AI can chase across seams.
+
+## Labyrinth generator
+
+The labyrinth is symmetric to keep the topology fair. It uses concentric ring regions with alternating connector orientations.
+
+```mermaid
+flowchart LR
+  Center[Center start square] --> Ring1[Ring 1 walls]
+  Ring1 -->|radial connectors| Ring2[Ring 2 walls]
+  Ring2 -->|tangential connectors| Ring3[Ring 3 walls]
+  Ring3 -->|radial connectors| Outer[Outer ring or seam]
+```
+
+Generation steps:
+
+1. Pick a deterministic seed from the room id.
+2. Place the center start square.
+3. For each ring, place wall segments at fixed radii with rotational symmetry of order N.
+4. Cut radial connectors in odd rings and tangential connectors in even rings, alternating.
+5. Apply topology-specific projection.
+6. Bake static meshes for the labyrinth at room start. Walls go up high enough that players cannot see past them. Floor and walls are dark gray.
+
+The labyrinth is deterministic given the seed so server and clients agree on geometry without sending mesh data.
+
+## Audio system
+
+Three audio buses: Music, SFX, UI.
+
+- Title screen plays a short oompa loop on the Music bus.
+- Lobby transition fades music with a reverb tail and crossfade into ambience.
+- During gameplay only footsteps and freeze/unfreeze stingers play.
+- Footstep emitters are attached to every player. Own steps play at fixed volume. Remote steps attenuate by distance with an audible falloff at about 8 meters.
+- Footstep tempo follows current speed via a one-shot timer pool.
+- Win plays a maniacal laugh. Loss plays the womp-womp stinger.
+
+All assets are CC0 or original. Sources tracked in `game/assets/CREDITS.md`.
+
+## Bot AI
+
+```mermaid
+stateDiagram-v2
+  [*] --> Patrol
+  Patrol --> Chase: enemy visible AND own team turn
+  Patrol --> Flee: enemy visible AND opponent turn
+  Patrol --> Rescue: frozen teammate within radius
+  Chase --> Patrol: lost sight
+  Flee --> Patrol: lost sight
+  Rescue --> Patrol: teammate unfrozen or unreachable
+```
+
+- Pathfinding: A\* on the same logical grid as the labyrinth, topology-aware.
+- Vision: cone check with raycast against walls. Limited by visibility radius equal to player visibility.
+- Decision tick: 5 Hz to keep CPU low even with many bots.
+- Bots are scheduled by the server in stranger lobbies and locally by the host in private bot-fill mode.
+
+## Networking
+
+Server-authoritative on the freeze state. Movement is client-predicted with server reconciliation.
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant DO as Room (Durable Object)
+  C->>DO: WS join {roomId, name, version}
+  DO-->>C: state_snapshot {seed, topology, players, turn, clock}
+  loop 20 Hz tick
+    C->>DO: input {seq, dt, move, look, sprint, action}
+    DO-->>C: state_delta {players, events}
+  end
+  C->>DO: tag_attempt {targetId, t}
+  DO-->>C: tag_result {ok, reason}
+```
+
+Wire protocol is CBOR for compactness with a versioned envelope:
+
+```
+Envelope {
+  v: uint8
+  t: msgType
+  p: payload
+}
+```
+
+Message types: `join`, `leave`, `input`, `state_snapshot`, `state_delta`, `tag_attempt`, `tag_result`, `unfreeze_attempt`, `unfreeze_result`, `event`, `ping`, `pong`.
+
+Reconciliation:
+
+- Client stores last N inputs.
+- Server returns `state_delta` containing authoritative position for the local player plus last acked input seq.
+- Client re-simulates from acked seq forward and snaps blend.
+
+Interest management is light. Rooms cap at 16 players, the full state fits in a small packet.
+
+## Backend services
+
+```mermaid
+flowchart LR
+  Browser[Static site] --> GH[GitHub Releases]
+  Game[Game client] --> MM[Matchmaker Worker]
+  MM -->|create or fetch| Room[Room Durable Object]
+  Game -->|WebSocket| Room
+  Room --> KV[(KV: lobby codes)]
+  Room --> Logs[(Workers Logs)]
+```
+
+- `matchmaker` Worker exposes:
+  - `POST /lobby` to create a private room and return a code.
+  - `POST /lobby/{code}/join` to fetch a WebSocket URL into the room.
+  - `POST /open/join` to be placed in or create an open room with the next available topology.
+  - `GET /healthz` for uptime checks.
+- `room` Durable Object holds room state, broadcasts deltas, and drives the tick loop. Uses the WebSocket hibernation API to stay cheap when idle.
+- `shared` provides protocol types compiled to both Workers and a small JSON schema bundled with the game client.
+
+## Matchmaking
+
+```mermaid
+flowchart TD
+  Start([Player picks mode]) --> Mode{Mode}
+  Mode -->|Host| Create[Create private room\nHost picks topology]
+  Create --> ShareCode[Display code]
+  ShareCode --> Wait[Wait for friends]
+  Mode -->|Code| EnterCode[Enter code]
+  EnterCode --> Lookup[Look up room]
+  Lookup -->|exists| Wait
+  Lookup -->|missing| Error[Show error]
+  Mode -->|Strangers| OpenJoin[Open join]
+  OpenJoin --> Find{Open room\nwith capacity?}
+  Find -->|yes| JoinExisting[Join]
+  Find -->|no| CreateOpen[Create open room\nRandom topology]
+  JoinExisting --> Wait
+  CreateOpen --> Wait
+  Wait --> Ready{Ready?}
+  Ready -->|min players or timer| Start10[Start 10s countdown]
+  Start10 --> Free[60s free roam]
+```
+
+Open rooms target a fill of 8 humans plus bots up to 16 total. If a room is not full after a fairness timer, it starts with bots filling the remaining seats.
+
+## Room lifecycle
+
+```mermaid
+stateDiagram-v2
+  [*] --> Empty
+  Empty --> Filling: first join
+  Filling --> Locked: matchmaking complete
+  Locked --> Countdown10
+  Countdown10 --> FreeRoam60
+  FreeRoam60 --> TurnLoop
+  TurnLoop --> EndScreen: a team is fully frozen
+  EndScreen --> Filling: rematch in private host mode
+  EndScreen --> [*]: open mode rematch returns to MM
+```
+
+Turn duration progression: round 1 is 30 seconds per team, round 2 is 60 seconds, round 3 is 90 seconds, then +30 each round, capped at 5 minutes.
+
+## Anti-cheat
+
+- All state transitions are server-authoritative.
+- The server validates tag attempts: distance under threshold, both players alive, attacker not frozen, attacker on the active turn team.
+- Movement deltas exceeding the maximum sprint speed are clamped.
+- Clients connect with a build version and a session token derived from the room code. Mismatched versions are rejected with a clear error.
+
+We do not attempt binary anti-tamper. The blast radius of cheating is limited because the server is the source of truth.
+
+## Website
+
+A small Astro site at `website/` deployed to GitHub Pages on every push to `main`.
+
+Pages:
+
+- Home: title, screenshot, install buttons that detect the visitor's OS.
+- How to play: rules summary.
+- Topologies: short visual explainer for each.
+- Credits: assets and acknowledgements.
+
+The install buttons resolve to the latest GitHub release asset by platform using a small client-side fetch against the GitHub API at runtime, with a static fallback.
+
+## Build and release pipeline
+
+```mermaid
+flowchart LR
+  PR[PR to dev] -->|checks| CI
+  CI -->|merge| Dev[(dev branch)]
+  Dev -->|promote PR| Staging[(staging branch)]
+  Staging -->|promote PR| Main[(main branch)]
+  Main -->|tag| Release
+  Release -->|GH Actions| Builds[(Win, Mac, Linux installers)]
+  Release -->|deploy| Workers[Cloudflare Workers prod]
+  Release -->|publish| Pages[GitHub Pages]
+```
+
+CI on every PR runs:
+
+- Lint and format
+- Type check
+- Unit tests
+- Backend integration tests against a Miniflare instance
+- Game headless smoke tests via Godot in headless mode
+- Build verification of game, backend, and website
+- Playwright website tests
+- Dependency vulnerability audit
+
+Release on a `v*` tag:
+
+- Build game for Windows, macOS, and Linux in parallel jobs.
+- Sign macOS build if signing secrets are configured.
+- Publish artifacts to GitHub Releases.
+- Deploy `backend/*` to the matching Workers environment.
+- Deploy website to GitHub Pages.
+
+## Environments
+
+| Environment | Branch    | Backend                            | Frontend                   |
+| ----------- | --------- | ---------------------------------- | -------------------------- |
+| dev         | `dev`     | `clowns-mimes-dev.workers.dev`     | preview deploy on every PR |
+| staging     | `staging` | `clowns-mimes-staging.workers.dev` | staging Pages              |
+| production  | `main`    | custom subdomain on Cloudflare     | GitHub Pages               |
+
+Each environment has its own KV namespace and Durable Object class binding to keep state isolated.
+
+## Observability
+
+- Cloudflare Workers Logs for backend events and errors.
+- Sentry for the game client and website (free tier).
+- Lightweight structured logs from the room over `console.log` with a JSON shape so they parse cleanly in Workers Logs.
+
+## Budget
+
+| Item                                                         | Annual cost               |
+| ------------------------------------------------------------ | ------------------------- |
+| Cloudflare Workers Paid plan                                 | USD 60                    |
+| Apple Developer Program (for macOS signing and notarization) | USD 99                    |
+| Domain registration (optional, deferrable)                   | USD 15                    |
+| GitHub (public repo, free)                                   | USD 0                     |
+| Sentry (free tier)                                           | USD 0                     |
+| **Total**                                                    | **USD 174** with headroom |
+
+Initial release can ship without code signing on macOS by accepting Gatekeeper warnings. Notarization is a fast-follow.
+
+## Open questions
+
+- Final username generator dictionary needs curation. The first cut is a small adjective-and-noun list expanded in a follow-up.
+- Sphere rendering: the octahedron-to-sphere projection is the planned approach; if visual quality is poor an alternative cubemap projection is available.
+- Whether to support cosmetic skins beyond clown and mime in v1. Default answer: no, scope creep.

@@ -1,0 +1,4 @@
+packages:
+  - 'backend/*'
+  - 'website'
+  - 'tests/e2e'
