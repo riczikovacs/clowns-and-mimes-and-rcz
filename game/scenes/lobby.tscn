@@ -1,0 +1,42 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/lobby.gd" id="1_lobby"]
+
+[node name="Lobby" type="Control"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_lobby")
+
+[node name="Background" type="ColorRect" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.06, 0.06, 0.08, 1)
+
+[node name="Center" type="VBoxContainer" parent="."]
+anchor_left = 0.3
+anchor_right = 0.7
+anchor_top = 0.15
+anchor_bottom = 0.85
+
+[node name="Title" type="Label" parent="Center"]
+horizontal_alignment = 1
+text = "Lobby"
+theme_override_font_sizes/font_size = 28
+
+[node name="Code" type="Label" parent="Center"]
+horizontal_alignment = 1
+text = ""
+theme_override_font_sizes/font_size = 22
+
+[node name="Status" type="Label" parent="Center"]
+horizontal_alignment = 1
+text = ""
+
+[node name="Players" type="VBoxContainer" parent="Center"]
+
+[node name="BackButton" type="Button" parent="."]
+anchor_left = 0.02
+anchor_top = 0.02
+offset_right = 80.0
+offset_bottom = 36.0
+text = "Back"

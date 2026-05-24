@@ -1,0 +1,63 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/main_menu.gd" id="1_menu"]
+
+[node name="MainMenu" type="Control"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_menu")
+
+[node name="Background" type="ColorRect" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.04, 0.04, 0.05, 1)
+
+[node name="Center" type="VBoxContainer" parent="."]
+anchor_left = 0.3
+anchor_right = 0.7
+anchor_top = 0.2
+anchor_bottom = 0.85
+custom_minimum_size = Vector2(420, 0)
+alignment = 1
+
+[node name="Title" type="Label" parent="Center"]
+horizontal_alignment = 1
+text = "Main menu"
+theme_override_font_sizes/font_size = 32
+
+[node name="UsernameRow" type="HBoxContainer" parent="Center"]
+
+[node name="Username" type="LineEdit" parent="Center/UsernameRow"]
+size_flags_horizontal = 3
+
+[node name="Random" type="Button" parent="Center/UsernameRow"]
+text = "Random"
+
+[node name="TopologyRow" type="HBoxContainer" parent="Center"]
+
+[node name="Label" type="Label" parent="Center/TopologyRow"]
+text = "Topology:"
+size_flags_horizontal = 3
+
+[node name="Topology" type="OptionButton" parent="Center/TopologyRow"]
+size_flags_horizontal = 3
+
+[node name="Buttons" type="VBoxContainer" parent="Center"]
+
+[node name="HostButton" type="Button" parent="Center/Buttons"]
+text = "Host a game"
+
+[node name="CodeButton" type="Button" parent="Center/Buttons"]
+text = "Enter a code"
+
+[node name="OpenButton" type="Button" parent="Center/Buttons"]
+text = "Play against internet strangers"
+
+[node name="CodeRow" type="HBoxContainer" parent="Center"]
+
+[node name="CodeLabel" type="Label" parent="Center/CodeRow"]
+text = "Code:"
+
+[node name="CodeEntry" type="LineEdit" parent="Center/CodeRow"]
+size_flags_horizontal = 3
+placeholder_text = "ABCDEF"
