@@ -6,6 +6,10 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+### Changed
+
+- Retired the `staging` long-lived branch and Cloudflare staging environment. Branch model is now `feature -> dev -> main`. Cloudflare per-PR preview deploys cover any pre-prod sanity check.
+
 ### Added
 
 - Initial public scaffolding of the monorepo, MIT license, contributor docs, and CI/CD pipelines.

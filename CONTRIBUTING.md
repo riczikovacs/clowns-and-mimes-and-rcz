@@ -35,11 +35,10 @@ pnpm --filter website dev
 
 ## Branching model
 
-Three long-lived branches:
+Two long-lived branches:
 
-- `dev` is the active development branch. Feature branches target it.
-- `staging` is a stabilization branch promoted from `dev` for pre-release validation.
-- `main` is the production branch. Releases are tagged from `main`.
+- `dev` is the active integration branch. Feature branches target it.
+- `main` is the production branch. `dev` is promoted to `main` via PR. Releases are tagged from `main`.
 
 Feature branches: `feat/<short-slug>`, fixes: `fix/<short-slug>`, chores: `chore/<short-slug>`.
 
