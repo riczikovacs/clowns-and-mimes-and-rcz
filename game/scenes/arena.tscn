@@ -1,14 +1,7 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/arena.gd" id="1_arena"]
 [ext_resource type="PackedScene" path="res://scenes/hud.tscn" id="2_hud"]
-
-[sub_resource type="PlaneMesh" id="floor"]
-size = Vector2(80, 80)
-
-[sub_resource type="StandardMaterial3D" id="floor_mat"]
-albedo_color = Color(0.1, 0.1, 0.12, 1)
-roughness = 0.95
 
 [node name="Arena" type="Node3D"]
 script = ExtResource("1_arena")
@@ -21,9 +14,7 @@ light_energy = 0.15
 
 [node name="World" type="Node3D" parent="."]
 
-[node name="Floor" type="MeshInstance3D" parent="World"]
-mesh = SubResource("floor")
-material_override = SubResource("floor_mat")
+[node name="LabyrinthHolder" type="Node3D" parent="World"]
 
 [node name="Spawn" type="Marker3D" parent="World"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.1, 0)

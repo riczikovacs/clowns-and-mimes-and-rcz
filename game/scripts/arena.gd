@@ -1,26 +1,46 @@
 extends Node3D
 
-## Game arena. Phase 1 ships with a placeholder floor and a single player so the
-## navigation, HUD, and countdown all wire together. Phase 2 replaces the
-## placeholder with the labyrinth generator and topology adapters.
+## Game arena. Generates the labyrinth using the configured topology and seed,
+## spawns the local player at the center, and drives the pre-game countdown.
 
 signal requested_screen(screen: String)
 
 const PLAYER := preload("res://scenes/player.tscn")
+const LABYRINTH := preload("res://scenes/labyrinth.tscn")
+const LabyrinthScript := preload("res://scripts/labyrinth.gd")
+const TopologyScript := preload("res://scripts/topology/topology.gd")
+const TopologyFactory := preload("res://scripts/topology/topology_factory.gd")
 
 @onready var world: Node3D = $World
-@onready var spawn: Node3D = $World/Spawn
+@onready var spawn: Marker3D = $World/Spawn
+@onready var labyrinth_holder: Node3D = $World/LabyrinthHolder
 @onready var hud: CanvasLayer = $HUD
 
 var local_player: Node = null
+var topology: TopologyScript
+var labyrinth: Node3D = null
 
 func _ready() -> void:
+	topology = TopologyFactory.from_string(GameState.topology_as_string())
+	_build_labyrinth()
 	_spawn_local_player()
 	hud.play_again_requested.connect(_on_play_again)
 	hud.lobby_requested.connect(_on_back_to_menu)
 	hud.set_sprint(100.0)
 	hud.set_countdown_seconds(10.0)
 	_run_pregame_countdown()
+
+func _build_labyrinth() -> void:
+	var node: Node3D = LABYRINTH.instantiate()
+	labyrinth_holder.add_child(node)
+	labyrinth = node
+	var rng_seed := _derive_seed()
+	labyrinth.build(rng_seed, topology)
+
+func _derive_seed() -> int:
+	if GameState.lobby_code.is_empty():
+		return randi()
+	return GameState.lobby_code.hash() & 0x7fffffff
 
 func _spawn_local_player() -> void:
 	local_player = PLAYER.instantiate()
@@ -42,3 +62,8 @@ func _on_play_again() -> void:
 func _on_back_to_menu() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	requested_screen.emit("menu")
+
+func _physics_process(_delta: float) -> void:
+	if local_player == null or topology == null:
+		return
+	local_player.global_position = topology.wrap(local_player.global_position)
