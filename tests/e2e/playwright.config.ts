@@ -10,7 +10,7 @@ export default defineConfig({
   workers: isCI ? 2 : undefined,
   reporter: isCI ? [['github'], ['html', { open: 'never' }]] : 'list',
   use: {
-    baseURL: process.env.WEBSITE_URL ?? 'http://localhost:4321/clowns-and-mimes',
+    baseURL: process.env.WEBSITE_URL ?? 'http://localhost:4321/clowns-and-mimes/',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
