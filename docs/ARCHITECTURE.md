@@ -191,8 +191,6 @@ Three audio buses: Music, SFX, UI.
 - Footstep tempo follows current speed via a one-shot timer pool.
 - Win plays a maniacal laugh. Loss plays the womp-womp stinger.
 
-All assets are CC0 or original. Sources tracked in `game/assets/CREDITS.md`.
-
 ## Bot AI
 
 ```mermaid

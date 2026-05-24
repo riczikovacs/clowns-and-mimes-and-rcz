@@ -11,6 +11,7 @@ const GameRulesScript := preload("res://scripts/game_rules.gd")
 const TopologyScript := preload("res://scripts/topology/topology.gd")
 const TopologyFactory := preload("res://scripts/topology/topology_factory.gd")
 const BotAIScript := preload("res://scripts/bot_ai.gd")
+const AssetPaths := preload("res://scripts/asset_paths.gd")
 
 const BOT_COUNT_PER_TEAM := 3
 const SPAWN_RADIUS := 2.5
@@ -154,8 +155,17 @@ func _on_saved(victim_id: String, savior_id: String) -> void:
 func _on_won(team: String) -> void:
 	var victory: bool = team == local_player.team
 	hud.show_end(victory)
-	AudioBus.set_bus_volume("Music", 0.0)
-	# Audio stingers attach in the polish phase once assets are vendored.
+	AudioBus.set_bus_volume("Music", -10.0)
+	var stinger_path: String = AssetPaths.WIN_STINGER if victory else AssetPaths.LOSE_STINGER
+	var stinger: AudioStream = AssetPaths.try_load_audio(stinger_path)
+	if stinger == null:
+		return
+	var player := AudioStreamPlayer.new()
+	player.bus = "SFX"
+	player.stream = stinger
+	add_child(player)
+	player.play()
+	player.finished.connect(player.queue_free)
 
 const MIME_BATTLE_CRIES := [
 	"MIMES- ATTACK!",
