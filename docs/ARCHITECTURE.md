@@ -338,8 +338,7 @@ The install buttons resolve to the latest GitHub release asset by platform using
 flowchart LR
   PR[PR to dev] -->|checks| CI
   CI -->|merge| Dev[(dev branch)]
-  Dev -->|promote PR| Staging[(staging branch)]
-  Staging -->|promote PR| Main[(main branch)]
+  Dev -->|promote PR| Main[(main branch)]
   Main -->|tag| Release
   Release -->|GH Actions| Builds[(Win, Mac, Linux installers)]
   Release -->|deploy| Workers[Cloudflare Workers prod]
@@ -367,13 +366,12 @@ Release on a `v*` tag:
 
 ## Environments
 
-| Environment | Branch    | Backend                            | Frontend                   |
-| ----------- | --------- | ---------------------------------- | -------------------------- |
-| dev         | `dev`     | `clowns-mimes-dev.workers.dev`     | preview deploy on every PR |
-| staging     | `staging` | `clowns-mimes-staging.workers.dev` | staging Pages              |
-| production  | `main`    | custom subdomain on Cloudflare     | GitHub Pages               |
+| Environment | Branch | Backend                         | Frontend                   |
+| ----------- | ------ | ------------------------------- | -------------------------- |
+| dev         | `dev`  | `cm-matchmaker-dev.workers.dev` | preview deploy on every PR |
+| production  | `main` | `cm-matchmaker.workers.dev`     | GitHub Pages               |
 
-Each environment has its own KV namespace and Durable Object class binding to keep state isolated.
+Each environment has its own KV namespace and Durable Object class binding to keep state isolated. Per-PR preview deploys cover the pre-prod sanity check role a staging branch used to handle.
 
 ## Observability
 

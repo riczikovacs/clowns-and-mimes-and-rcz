@@ -3,7 +3,7 @@ extends Node
 ## Configuration for the multiplayer backend. The matchmaker URL is read first
 ## from an environment variable, then from a project setting, then falls back to
 ## the production worker. Override at runtime by exporting CLOWNS_MM_URL before
-## launching the game (handy for staging or local development).
+## launching the game (handy for the dev environment or a local wrangler).
 
 const DEFAULT_MATCHMAKER := "https://cm-matchmaker.workers.dev"
 const ENV_VAR := "CLOWNS_MM_URL"
