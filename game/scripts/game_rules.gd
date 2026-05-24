@@ -128,7 +128,7 @@ func _begin_next_turn() -> void:
 		next_team = "clown"
 	else:
 		next_team = "mime"
-	var duration := min(TURN_CAP_S, FIRST_TURN_S + (round_number - 1) * TURN_STEP_S)
+	var duration: float = minf(TURN_CAP_S, FIRST_TURN_S + float(round_number - 1) * TURN_STEP_S)
 	var next_phase: int = Phase.TURN_MIME if next_team == "mime" else Phase.TURN_CLOWN
 	_set_phase(next_phase, duration)
 
