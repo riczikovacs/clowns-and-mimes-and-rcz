@@ -30,7 +30,7 @@ Online play overhaul: client-side prediction with server reconciliation, 60 Hz s
 
 - Movement math lives in `@cm/shared/movement` and is mirrored verbatim in `game/scripts/movement.gd`. Both server `simulateHumans` and client predictor call the same `stepMovement`, so reconciliation replay lands on the same position the server computed.
 - `input.move` on the wire is now world-space XZ (rotated by yaw on the client). Reconciliation replay no longer needs to remember historical yaw per input.
-- `RoomPhase` drops the pre-match countdown. Filling -> free_roam -> turn_<team> immediately, with a 30 s free-roam window.
+- `RoomPhase` drops the pre-match countdown. `filling` goes straight to `free_roam` then `turn_mime` / `turn_clown`, with a 30 s free-roam window.
 - Lobby code rendering: the seeded "10" countdown placeholder is gone; the label stays blank until the first phase update arrives.
 - HUD event log capped to 5 lines with a fade gradient on older entries.
 - Open-lobby route stamps the chosen topology onto the wsUrl so the Room DO applies the correct topology before the first client connects (fixed everyone landing on plane).
