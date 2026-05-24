@@ -32,7 +32,7 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ### Known follow-ups
 
-- A* pathfinding for bots around labyrinth walls.
+- A\* pathfinding for bots around labyrinth walls.
 - Wiring RoomClient into Arena so online play is server-driven (currently the lobby reaches the matchmaker, then the arena drops to local rules).
 - Audio assets and footstep emitters.
 - macOS code signing and notarization once Apple Developer secrets are in place.
