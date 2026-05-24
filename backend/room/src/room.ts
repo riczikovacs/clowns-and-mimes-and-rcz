@@ -11,6 +11,7 @@ import type {
 import { BATTLE_CRY_COUNT, PROTOCOL_VERSION } from '@cm/shared';
 import { topologyDistance, wrapPosition } from '@cm/shared/topology';
 import { generateWalls, pathCrossesWall, type WallSegment } from '@cm/shared/labyrinth';
+import { BotPathfinder } from './botPathfinder.ts';
 
 const TICK_HZ = 20;
 const TICK_MS = 1000 / TICK_HZ;
@@ -115,9 +116,18 @@ export class Room implements DurableObject {
   // to that snapshot for the distance check.
   private readonly positionHistory = new Map<string, Array<{ t: number; x: number; z: number }>>();
   private walls: readonly WallSegment[] = [];
+  // Grid BFS pathfinder. Rebuilt whenever walls regenerate (seed or topology
+  // change). simulateBots queries nextWaypoint so chase / rescue targets get
+  // routed around wall segments instead of grinding into them.
+  private pathfinder: BotPathfinder | null = null;
 
   constructor(private readonly state: DurableObjectState) {
     this.walls = generateWalls(this.seed, this.topology);
+    this.rebuildPathfinder();
+  }
+
+  private rebuildPathfinder(): void {
+    this.pathfinder = new BotPathfinder(this.walls, this.topology);
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -319,11 +329,13 @@ export class Room implements DurableObject {
     // others use concentric rings. Rebuild so pathCrossesWall checks against
     // the right geometry.
     this.walls = generateWalls(this.seed, t);
+    this.rebuildPathfinder();
   }
 
   setSeed(seed: number): void {
     this.seed = seed;
     this.walls = generateWalls(seed, this.topology);
+    this.rebuildPathfinder();
   }
 
   private detach(ws: WebSocket): void {
@@ -715,9 +727,24 @@ export class Room implements DurableObject {
         const away = unitDelta(target.position, bot.position);
         dir = away;
       } else if (rescuing && rescueTarget) {
-        dir = unitDelta(bot.position, rescueTarget.position);
+        // BFS-route around walls toward the frozen teammate. The pathfinder
+        // returns the world-space center of the next cell along the shortest
+        // path; if from/to share a cell or are directly adjacent it returns
+        // the destination unchanged, so the slide-fallback below still does
+        // the final approach.
+        const waypoint = this.pathfinder
+          ? this.pathfinder.nextWaypoint(bot.position, rescueTarget.position)
+          : rescueTarget.position;
+        dir = unitDelta(bot.position, waypoint);
       } else if (chasing && target) {
-        dir = unitDelta(bot.position, target.position);
+        // Same BFS routing for chase. A wall between bot and target used to
+        // pin the bot in place because the direct vector and both axis slides
+        // crossed the same wall segment; now the bot heads for an open
+        // adjacent cell on the actual shortest path.
+        const waypoint = this.pathfinder
+          ? this.pathfinder.nextWaypoint(bot.position, target.position)
+          : target.position;
+        dir = unitDelta(bot.position, waypoint);
       } else {
         if (now >= mind.patrolUntil || nearTarget(bot.position, mind.patrolTarget)) {
           mind.patrolTarget = this.randomPatrolPoint();

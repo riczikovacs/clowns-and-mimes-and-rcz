@@ -1,0 +1,229 @@
+// Server-side grid pathfinder for bots. Walls in the labyrinth can sit between
+// a bot and its chase / rescue target; the previous AI only tried the direct
+// vector plus axis-aligned slides, so a wall between the two endpoints would
+// pin the bot in place. This module exposes a BFS over the NxN cell grid that
+// underlies the maze: an edge exists between two adjacent cells iff no wall
+// segment crosses the line between their centers. `nextWaypoint` returns the
+// world-space center of the next cell along the shortest path, which the bot
+// can then aim at instead of the raw target.
+//
+// The graph is rebuilt whenever the wall set changes (seed or topology). BFS
+// results are cached per (fromCell, toCell) for a short window so a swarm of
+// bots all chasing the same target only pays the search cost once.
+
+import type { Topology, Vec2 } from '@cm/shared';
+import { pathCrossesWall, type WallSegment } from '@cm/shared/labyrinth';
+import { GRID_MAZE_N, SPHERE_GRID_X, SPHERE_GRID_Z } from '@cm/shared/gridMaze';
+import { WORLD_WIDTH } from '@cm/shared/topology';
+
+interface GridShape {
+  cols: number;
+  rows: number;
+  cellX: number;
+  cellZ: number;
+  wrapX: boolean;
+  wrapZ: boolean;
+  // Klein: when crossing the x seam, the row index flips. The wrap on the z
+  // axis is plain modular. Sphere and torus do not flip.
+  flipRowOnXWrap: boolean;
+}
+
+export class BotPathfinder {
+  private readonly shape: GridShape;
+  // adjacency[cell] is a bitset over the cell's neighbor list. Bit k set means
+  // the k-th neighbor entry is reachable. The neighbor lookup is by direction
+  // index (east, north, west, south), so adjacency stores 4 bits per cell.
+  private readonly adjacency: Uint8Array;
+  // BFS cache: key is fromCell*total + toCell. Value is the first cell to walk
+  // toward (-1 if none / unreachable / same cell). The map is cleared whenever
+  // a new pathfinder is constructed; bots typically query a handful of cell
+  // pairs per tick so the map stays small.
+  private readonly nextStepCache = new Map<number, number>();
+
+  constructor(walls: readonly WallSegment[], topology: Topology) {
+    this.shape = gridShapeFor(topology);
+    const total = this.shape.cols * this.shape.rows;
+    this.adjacency = new Uint8Array(total);
+    this.buildAdjacency(walls);
+  }
+
+  /**
+   * World-space center of the next cell to walk toward, given current position
+   * `from` and the desired destination `to`. Returns `to` unchanged when the
+   * two endpoints are in the same cell or in adjacent reachable cells (no
+   * detour needed). Returns `to` unchanged when no path exists - the caller
+   * still gets the original target so the existing slide-fallback in
+   * simulateBots can take a stab at it.
+   */
+  nextWaypoint(from: Vec2, to: Vec2): Vec2 {
+    const fromCell = this.worldToCell(from);
+    const toCell = this.worldToCell(to);
+    if (fromCell === toCell) return to;
+    // If the destination cell is a direct neighbor of the start, no BFS is
+    // needed: just head straight there. The caller's slide-fallback handles
+    // the final approach into the target's actual position.
+    if (this.directlyReachable(fromCell, toCell)) return to;
+    const nextCell = this.nextStepOnPath(fromCell, toCell);
+    if (nextCell < 0) return to;
+    return this.cellCenter(nextCell);
+  }
+
+  private buildAdjacency(walls: readonly WallSegment[]): void {
+    const { cols, rows } = this.shape;
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const cell = c + r * cols;
+        let mask = 0;
+        for (let dir = 0; dir < 4; dir += 1) {
+          const nb = this.neighborCell(c, r, dir);
+          if (nb < 0) continue;
+          const a = this.cellCenter(cell);
+          const b = this.cellCenter(nb);
+          if (!pathCrossesWall(walls, a.x, a.z, b.x, b.z)) {
+            mask |= 1 << dir;
+          }
+        }
+        this.adjacency[cell] = mask;
+      }
+    }
+  }
+
+  private directlyReachable(fromCell: number, toCell: number): boolean {
+    const { cols } = this.shape;
+    const cc = fromCell % cols;
+    const cr = Math.floor(fromCell / cols);
+    for (let dir = 0; dir < 4; dir += 1) {
+      if ((this.adjacency[fromCell]! & (1 << dir)) === 0) continue;
+      if (this.neighborCell(cc, cr, dir) === toCell) return true;
+    }
+    return false;
+  }
+
+  /**
+   * BFS from `fromCell` to `toCell`, returning the first cell on the shortest
+   * path (i.e. the immediate next step after `fromCell`). -1 if unreachable.
+   * Cached per (from, to) pair.
+   */
+  private nextStepOnPath(fromCell: number, toCell: number): number {
+    const total = this.shape.cols * this.shape.rows;
+    const key = fromCell * total + toCell;
+    const cached = this.nextStepCache.get(key);
+    if (cached !== undefined) return cached;
+
+    const parent = new Int32Array(total);
+    parent.fill(-1);
+    parent[fromCell] = fromCell;
+    const queue: number[] = [fromCell];
+    let found = false;
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (cur === toCell) {
+        found = true;
+        break;
+      }
+      const cc = cur % this.shape.cols;
+      const cr = Math.floor(cur / this.shape.cols);
+      const mask = this.adjacency[cur]!;
+      for (let dir = 0; dir < 4; dir += 1) {
+        if ((mask & (1 << dir)) === 0) continue;
+        const nb = this.neighborCell(cc, cr, dir);
+        if (nb < 0) continue;
+        if (parent[nb] !== -1) continue;
+        parent[nb] = cur;
+        queue.push(nb);
+      }
+    }
+
+    let step = -1;
+    if (found) {
+      // Walk parent pointers back from `toCell` until the predecessor is the
+      // start; that predecessor's child is the first step on the path.
+      let cur = toCell;
+      while (parent[cur] !== fromCell && parent[cur] !== cur) {
+        cur = parent[cur]!;
+      }
+      step = cur;
+    }
+    this.nextStepCache.set(key, step);
+    return step;
+  }
+
+  /**
+   * Cell index of the cardinal neighbor of (col, row) in direction `dir`, or
+   * -1 if the neighbor would fall outside a non-wrapping boundary. Wrap and
+   * flip rules mirror gridMaze.neighborOf so the pathfinder agrees with the
+   * maze generator about which faces are seams vs walls.
+   *
+   * dir: 0 east (+x), 1 north (+z), 2 west (-x), 3 south (-z)
+   */
+  private neighborCell(col: number, row: number, dir: number): number {
+    const { cols, rows, wrapX, wrapZ, flipRowOnXWrap } = this.shape;
+    let nc = col;
+    let nr = row;
+    let flipRow = false;
+    if (dir === 0) nc = col + 1;
+    else if (dir === 2) nc = col - 1;
+    else if (dir === 1) nr = row + 1;
+    else if (dir === 3) nr = row - 1;
+    if (nc < 0 || nc >= cols) {
+      if (!wrapX) return -1;
+      nc = ((nc % cols) + cols) % cols;
+      if (flipRowOnXWrap) flipRow = true;
+    }
+    if (nr < 0 || nr >= rows) {
+      if (!wrapZ) return -1;
+      nr = ((nr % rows) + rows) % rows;
+    }
+    if (flipRow) nr = rows - 1 - nr;
+    return nc + nr * cols;
+  }
+
+  private worldToCell(p: Vec2): number {
+    const { cols, rows, cellX, cellZ, wrapX, wrapZ } = this.shape;
+    const half = WORLD_WIDTH / 2;
+    let c = Math.floor((p.x + half) / cellX);
+    let r = Math.floor((p.z + half) / cellZ);
+    if (wrapX) c = ((c % cols) + cols) % cols;
+    else c = Math.max(0, Math.min(cols - 1, c));
+    if (wrapZ) r = ((r % rows) + rows) % rows;
+    else r = Math.max(0, Math.min(rows - 1, r));
+    return c + r * cols;
+  }
+
+  private cellCenter(cell: number): Vec2 {
+    const { cols, cellX, cellZ } = this.shape;
+    const c = cell % cols;
+    const r = Math.floor(cell / cols);
+    const half = WORLD_WIDTH / 2;
+    return {
+      x: (c + 0.5) * cellX - half,
+      z: (r + 0.5) * cellZ - half,
+    };
+  }
+}
+
+function gridShapeFor(topology: Topology): GridShape {
+  if (topology === 'sphere') {
+    return {
+      cols: SPHERE_GRID_X,
+      rows: SPHERE_GRID_Z,
+      cellX: WORLD_WIDTH / SPHERE_GRID_X,
+      cellZ: WORLD_WIDTH / SPHERE_GRID_Z,
+      // Sphere uses face-local mazes packed 3x2; the topology adapter wraps
+      // between faces with torus-like modular indexing for now (see
+      // wrapPosition's sphere branch). Mirror that here.
+      wrapX: true,
+      wrapZ: true,
+      flipRowOnXWrap: false,
+    };
+  }
+  return {
+    cols: GRID_MAZE_N,
+    rows: GRID_MAZE_N,
+    cellX: WORLD_WIDTH / GRID_MAZE_N,
+    cellZ: WORLD_WIDTH / GRID_MAZE_N,
+    wrapX: topology !== 'plane',
+    wrapZ: topology !== 'plane',
+    flipRowOnXWrap: topology === 'klein',
+  };
+}
