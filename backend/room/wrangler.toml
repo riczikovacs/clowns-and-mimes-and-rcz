@@ -3,10 +3,6 @@ main = "src/worker.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-[[durable_objects.bindings]]
-name = "ROOM"
-class_name = "Room"
-
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
@@ -14,5 +10,13 @@ new_sqlite_classes = ["Room"]
 [env.dev]
 name = "cm-room-dev"
 
+[[env.dev.durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
 [env.production]
 name = "cm-room"
+
+[[env.production.durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"

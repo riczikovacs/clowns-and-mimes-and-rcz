@@ -33,6 +33,21 @@ Start the website locally:
 pnpm --filter website dev
 ```
 
+Playtest against the deployed dev backend (lobby/room workers are already live at `*.seanreid.workers.dev`):
+
+```
+scripts/playtest-dev.sh
+```
+
+That sets `CLOWNS_MM_URL=https://cm-matchmaker-dev.seanreid.workers.dev` and launches the Godot editor pointed at the dev workers. Override `CLOWNS_MM_URL` to test against production or a custom deployment.
+
+Smoke-test the deployed backend (health check, lobby create, lobby join, websocket snapshot):
+
+```
+pnpm --filter @cm/smoke dev          # hits the dev backend
+pnpm --filter @cm/smoke production   # hits the production backend after a tag
+```
+
 ## Branching model
 
 Two long-lived branches:
