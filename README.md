@@ -25,12 +25,13 @@ No build steps are required. Download, install, launch.
 
 ## Controls
 
-| Action | Input      |
-| ------ | ---------- |
-| Move   | WASD       |
-| Look   | Mouse      |
-| Sprint | Hold Shift |
-| Pause  | Esc        |
+| Action         | Input                                          |
+| -------------- | ---------------------------------------------- |
+| Move           | WASD                                           |
+| Look           | Mouse                                          |
+| Sprint         | Hold Shift                                     |
+| Tag / unfreeze | Run into the other player (no button required) |
+| Pause          | Esc                                            |
 
 ## Repository layout
 
