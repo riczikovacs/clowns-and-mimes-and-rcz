@@ -15,6 +15,8 @@ const AssetPaths := preload("res://scripts/asset_paths.gd")
 
 const BOT_COUNT_PER_TEAM := 3
 const SPAWN_RADIUS := 2.5
+const CONTACT_RADIUS := 1.2
+const CONTACT_COOLDOWN_S := 0.6
 
 @onready var world: Node3D = $World
 @onready var spawn: Marker3D = $World/Spawn
@@ -27,6 +29,7 @@ var topology: TopologyScript
 var labyrinth: Node3D = null
 var rules: Node = null
 var player_nodes: Dictionary = {}
+var contact_cooldowns: Dictionary = {}
 
 func _ready() -> void:
 	topology = TopologyFactory.from_string(GameState.topology_as_string())
@@ -109,25 +112,30 @@ func _physics_process(_delta: float) -> void:
 	if local_player == null or topology == null:
 		return
 	local_player.global_position = topology.wrap(local_player.global_position)
-	if Input.is_action_just_pressed("action_tag") and not local_player.frozen:
-		_try_local_interaction()
+	if not local_player.frozen:
+		_check_contact_interactions()
 
-func _try_local_interaction() -> void:
+func _check_contact_interactions() -> void:
 	var active: String = rules.active_team()
+	var now: float = Time.get_unix_time_from_system()
 	for id in player_nodes.keys():
 		if id == local_player_id:
 			continue
 		var node: Node = player_nodes[id]
-		var d := topology.distance(local_player.global_position, node.global_position)
-		var info: Dictionary = rules.players[id]
-		if d > 1.6:
+		var d: float = topology.distance(local_player.global_position, node.global_position)
+		if d > CONTACT_RADIUS:
 			continue
+		var last: float = contact_cooldowns.get(id, 0.0)
+		if now - last < CONTACT_COOLDOWN_S:
+			continue
+		var info: Dictionary = rules.players[id]
+		var triggered: bool = false
 		if active == local_player.team and info["team"] != local_player.team and not info["frozen"]:
-			rules.try_tag(local_player_id, id)
-			return
-		if info["team"] == local_player.team and info["frozen"]:
-			rules.try_unfreeze(local_player_id, id)
-			return
+			triggered = rules.try_tag(local_player_id, id)
+		elif info["team"] == local_player.team and info["frozen"]:
+			triggered = rules.try_unfreeze(local_player_id, id)
+		if triggered:
+			contact_cooldowns[id] = now
 
 func _on_tagged(victim_id: String, attacker_id: String, team: String) -> void:
 	var victim: Node = player_nodes.get(victim_id)
