@@ -124,6 +124,7 @@ Player movement is handled by `PlayerController.gd`, a `CharacterBody3D` with:
 - Mouse look with capture
 - Shift to sprint while sprint energy is above zero
 - Footstep sound emitter modulated by current speed
+- Tag and unfreeze fire on contact: when the active turn's team brushes within 1.2 m of an eligible opponent or teammate, the interaction is sent to the rules engine. A 0.6 s cooldown per target prevents a single brush from double-triggering.
 
 Sprint energy:
 
