@@ -137,14 +137,14 @@ The world is represented as a 2D coordinate grid with topology-specific wrapping
 ```mermaid
 classDiagram
   class Topology {
-    +wrap_position(Vector3 p) Vector3
-    +wrap_direction(Vector3 v) Vector3
-    +great_circle_distance(a, b) float
-    +seam_portals() Array
+    +wrap(Vector3 p) Vector3
+    +distance(a, b) float
+    +kind() Kind
+    +name() String
   }
   Topology <|-- PlaneTopology
   Topology <|-- TorusTopology
-  Topology <|-- KleinBottleTopology
+  Topology <|-- KleinTopology
   Topology <|-- SphereTopology
 ```
 
@@ -155,7 +155,7 @@ classDiagram
 | Klein bottle | X wraps with vertical flip, Z wraps with no flip.           | Edge portals on X axis render an inverted copy.                                                                                                                   |
 | Sphere       | Coordinates are spherical. Movement is along great circles. | Curved horizon shader simulates surface curvature. The labyrinth is projected via an octahedron-to-sphere mapping that keeps the symmetric ring structure intact. |
 
-Wrapping is enforced in `Topology.wrap_position` after every physics step. The same `Topology` instance is used by the bot pathfinder so the AI can chase across seams.
+Wrapping is enforced in `Topology.wrap` after every physics step. Both the GDScript and TypeScript implementations share the same canonical math; the GDScript build uses `fposmod` where TS uses the `((v + half) % width + width) % width` idiom, which produce identical values.
 
 ## Labyrinth generator
 
@@ -206,8 +206,8 @@ stateDiagram-v2
   Rescue --> Patrol: teammate unfrozen or unreachable
 ```
 
-- Pathfinding: A\* on the same logical grid as the labyrinth, topology-aware.
-- Vision: cone check with raycast against walls. Limited by visibility radius equal to player visibility.
+- Steering: targets are picked from the shared rules state and the bot walks straight toward them. A stuck detector re-picks the target when no progress is made for one second. A\* pathfinding around walls is tracked as a follow-up.
+- Visibility: scalar distance threshold against the topology-aware `distance` function. No raycast cone yet.
 - Decision tick: 5 Hz to keep CPU low even with many bots.
 - Bots are scheduled by the server in stranger lobbies and locally by the host in private bot-fill mode.
 

@@ -20,10 +20,11 @@ pnpm install
 
 Open the game client in Godot by pointing the editor at the `game/` folder.
 
-Start the backend locally:
+Start the backend workers locally (each in its own terminal):
 
 ```
-pnpm --filter backend dev
+pnpm --filter @cm/matchmaker dev
+pnpm --filter @cm/room dev
 ```
 
 Start the website locally:
