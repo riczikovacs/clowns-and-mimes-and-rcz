@@ -6,9 +6,17 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-24
+
+Re-cuts v0.1.1 with the macOS installer attached. The 0.1.1 macOS build failed at export because the preset was configured for App Store distribution, which requires a signing identity we do not have.
+
+### Fixed
+
+- macOS export preset switched from distribution_type=2 (App Store) to 0 (Testing), so the universal binary exports without an Apple Developer ID. Users will need to clear the quarantine xattr to launch the unsigned build on first run.
+
 ## [0.1.1] - 2026-05-24
 
-First release with all three platform installers. v0.1.0 failed to publish a macOS asset because Godot 4 refuses universal/arm64 exports unless ETC2 ASTC import is enabled in the project; that setting is on now. Also lands topology-aware A\* pathfinding and server-side wall collision for bots.
+First release with all three platform installers planned. v0.1.0 failed to publish a macOS asset because Godot 4 refuses universal/arm64 exports unless ETC2 ASTC import is enabled in the project; that setting is on now. Also lands topology-aware A\* pathfinding and server-side wall collision for bots.
 
 ### Fixed
 
