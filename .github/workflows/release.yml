@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Optional tag to publish under (skipped if blank)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -33,6 +39,7 @@ jobs:
       - name: Install Godot 4 (Linux runners)
         if: matrix.runner == 'ubuntu-latest'
         run: |
+          set -eu
           curl -L -o godot.zip https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
           unzip -q godot.zip
           sudo mv Godot_v4.3-stable_linux.x86_64 /usr/local/bin/godot
@@ -44,6 +51,7 @@ jobs:
       - name: Install Godot 4 (macOS runner)
         if: matrix.runner == 'macos-latest'
         run: |
+          set -eu
           curl -L -o godot.zip https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_macos.universal.zip
           unzip -q godot.zip
           sudo mv Godot.app /Applications/Godot.app
@@ -51,21 +59,33 @@ jobs:
           mkdir -p ~/Library/Application\ Support/Godot/export_templates/4.3.stable
           unzip -q templates.tpz -d /tmp/templates
           mv /tmp/templates/templates/* ~/Library/Application\ Support/Godot/export_templates/4.3.stable/
+      - name: Prime project (import resources)
+        shell: bash
+        run: |
+          if [ "${{ matrix.runner }}" = "macos-latest" ]; then
+            /Applications/Godot.app/Contents/MacOS/Godot --headless --path game --import || true
+          else
+            godot --headless --path game --import || true
+          fi
       - name: Export
         shell: bash
         run: |
+          set -eu
           mkdir -p out
           if [ "${{ matrix.runner }}" = "macos-latest" ]; then
             /Applications/Godot.app/Contents/MacOS/Godot --headless --path game --export-release "${{ matrix.preset }}" "../out/${{ matrix.output }}"
           else
             godot --headless --path game --export-release "${{ matrix.preset }}" "../out/${{ matrix.output }}"
           fi
+          test -e "out/${{ matrix.output }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output }}
           path: out/${{ matrix.output }}
+          if-no-files-found: error
 
   publish-release:
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build-game
     runs-on: ubuntu-latest
     steps:
@@ -80,6 +100,7 @@ jobs:
           generate_release_notes: true
 
   deploy-backend:
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build-game
     runs-on: ubuntu-latest
     environment: production
@@ -90,19 +111,34 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Deploy matchmaker
+      - name: Check Cloudflare credentials
+        id: creds
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping deploy - CLOUDFLARE_API_TOKEN secret is not set yet."
+          fi
+      - if: steps.creds.outputs.configured == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.creds.outputs.configured == 'true'
+        name: Deploy matchmaker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm --filter @cm/matchmaker deploy:production
-      - name: Deploy room
+      - if: steps.creds.outputs.configured == 'true'
+        name: Deploy room
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm --filter @cm/room deploy:production
 
   deploy-website:
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build-game
     runs-on: ubuntu-latest
     permissions:
