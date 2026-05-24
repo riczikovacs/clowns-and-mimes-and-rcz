@@ -9,150 +9,387 @@ const releasesApi = 'https://api.github.com/repos/sean-reid/clowns-and-mimes/rel
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>{title}</title>
     <meta
       name="description"
       content="A team tag game played on a dimly lit labyrinth that wraps in unusual ways."
     />
     <meta property="og:title" content={title} />
-    <meta property="og:description" content="Tag every opponent before they tag you. The arena might be a sphere, a torus, or a Klein bottle." />
+    <meta
+      property="og:description"
+      content="Tag every opponent before they tag you. The arena might be a sphere, a torus, or a Klein bottle."
+    />
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230c0c0e'/%3E%3Ccircle cx='5' cy='8' r='3.2' fill='%23f5f5f5'/%3E%3Ccircle cx='11' cy='8' r='3.2' fill='%23e63946'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230c0c0e'/%3E%3Ccircle cx='5' cy='8' r='3.4' fill='%23f5f5f5'/%3E%3Ccircle cx='11' cy='8' r='3.4' fill='%23e63946'/%3E%3C/svg%3E"
+    />
+    <link
+      rel="preconnect"
+      href="https://fonts.googleapis.com"
+      crossorigin
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bungee+Shade&family=Comic+Neue:wght@400;700&display=swap"
+      rel="stylesheet"
     />
     <style>
       :root {
         color-scheme: dark;
-        --bg: #0c0c0e;
-        --panel: #16161a;
-        --border: #2a2a2e;
-        --text: #f1f1f1;
-        --muted: #9a9aa3;
-        --accent: #f5d142;
-        --clown: #e63946;
-        --mime: #f5f5f5;
+        --ink: #fffceb;
+        --paper: #160a1f;
+        --clown: #ff3855;
+        --clown-soft: #ffd0a8;
+        --mime: #ffffff;
+        --bow: #38c2ff;
+        --candy: #ffd400;
+        --accent: #ff8be0;
+        --panel: rgba(255, 255, 230, 0.05);
+        --border: rgba(255, 255, 230, 0.18);
       }
       * { box-sizing: border-box; }
-      html, body { margin: 0; }
+      html, body { margin: 0; padding: 0; }
       body {
-        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
-        background: radial-gradient(circle at 50% 20%, #1a1a1f 0%, var(--bg) 60%);
-        color: var(--text);
+        font-family: 'Comic Neue', 'Comic Sans MS', 'Chalkboard SE', cursive;
+        font-size: 1.05rem;
         line-height: 1.55;
+        color: var(--ink);
+        background-color: var(--paper);
+        background-image:
+          radial-gradient(circle at 22% 18%, rgba(255, 56, 85, 0.35) 0, transparent 28%),
+          radial-gradient(circle at 78% 24%, rgba(56, 194, 255, 0.32) 0, transparent 30%),
+          radial-gradient(circle at 50% 90%, rgba(255, 212, 0, 0.25) 0, transparent 28%),
+          radial-gradient(rgba(255, 255, 255, 0.18) 1.2px, transparent 1.2px),
+          radial-gradient(rgba(255, 255, 255, 0.10) 1.2px, transparent 1.2px);
+        background-size:
+          auto,
+          auto,
+          auto,
+          36px 36px,
+          36px 36px;
+        background-position:
+          0 0,
+          0 0,
+          0 0,
+          0 0,
+          18px 18px;
+        overflow-x: hidden;
       }
-      a { color: var(--accent); }
       header, section, footer {
-        max-width: 920px;
+        max-width: 980px;
         margin: 0 auto;
         padding: 0 1.25rem;
       }
       header {
-        padding-top: 3.5rem;
+        padding-top: 3rem;
         padding-bottom: 1.5rem;
+        text-align: center;
+        position: relative;
+      }
+      .stripes {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.07;
+        background: repeating-linear-gradient(
+          45deg,
+          var(--ink) 0 6px,
+          transparent 6px 22px
+        );
       }
       h1 {
-        font-size: clamp(1.7rem, 4.5vw, 3rem);
-        line-height: 1.1;
+        font-family: 'Bungee Shade', 'Impact', 'Comic Sans MS', cursive;
+        font-size: clamp(2rem, 6vw, 4rem);
+        line-height: 1.05;
         margin: 0 0 0.75rem;
-        letter-spacing: -0.02em;
+        letter-spacing: 0.02em;
+        text-shadow:
+          3px 3px 0 var(--clown),
+          -2px 4px 0 var(--bow),
+          0 0 24px rgba(255, 212, 0, 0.45);
+        transform: rotate(-1.5deg);
+        animation: wiggle 5.5s ease-in-out infinite;
       }
+      h1 .accent { color: var(--candy); display: inline-block; animation: bounce 2.4s ease-in-out infinite; }
       .lede {
-        color: var(--muted);
-        font-size: clamp(1rem, 1.6vw, 1.2rem);
-        max-width: 56ch;
+        max-width: 60ch;
+        margin: 0 auto;
+        color: var(--clown-soft);
+        font-size: clamp(1.05rem, 1.6vw, 1.25rem);
+        font-weight: 700;
       }
       .heads {
         display: flex;
-        gap: 1rem;
-        align-items: center;
-        margin-bottom: 2.25rem;
+        gap: 1.25rem;
+        justify-content: center;
+        align-items: flex-end;
+        margin: 1.6rem 0 0.5rem;
+        position: relative;
       }
       .head {
-        width: clamp(48px, 8vw, 72px);
-        height: clamp(48px, 8vw, 72px);
+        width: clamp(64px, 11vw, 96px);
+        height: clamp(64px, 11vw, 96px);
         border-radius: 50%;
-        box-shadow: 0 0 0 4px var(--border) inset;
+        position: relative;
+        filter: drop-shadow(0 6px 0 rgba(0, 0, 0, 0.5));
       }
-      .head.mime { background: var(--mime); }
-      .head.clown { background: var(--clown); }
+      .head .eye {
+        position: absolute;
+        width: 14%;
+        height: 14%;
+        background: #0c0c0e;
+        border-radius: 50%;
+        top: 40%;
+      }
+      .head .eye.left { left: 24%; }
+      .head .eye.right { right: 24%; }
+      .head .mouth {
+        position: absolute;
+        left: 22%;
+        right: 22%;
+        bottom: 18%;
+        height: 18%;
+        border-radius: 0 0 50px 50px;
+        border-bottom: 4px solid #0c0c0e;
+      }
+      .head.mime { background: var(--mime); animation: bobLeft 3.4s ease-in-out infinite; }
+      .head.mime .tear {
+        position: absolute;
+        left: 26%;
+        top: 50%;
+        width: 8%;
+        height: 14%;
+        background: var(--bow);
+        border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+      }
+      .head.clown { background: var(--clown); animation: bobRight 3.4s ease-in-out infinite; }
+      .head.clown .nose {
+        position: absolute;
+        left: 42%;
+        top: 50%;
+        width: 16%;
+        height: 16%;
+        background: var(--candy);
+        border-radius: 50%;
+        box-shadow: 0 0 8px var(--candy);
+      }
+      .head.clown .hair {
+        position: absolute;
+        left: -8%;
+        top: -16%;
+        right: -8%;
+        height: 32%;
+        background:
+          radial-gradient(circle at 20% 80%, var(--accent) 0 18px, transparent 19px),
+          radial-gradient(circle at 50% 60%, var(--accent) 0 20px, transparent 21px),
+          radial-gradient(circle at 80% 80%, var(--accent) 0 18px, transparent 19px);
+        z-index: -1;
+      }
       .downloads {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 0.75rem;
-        margin: 1rem 0 2rem;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 1rem;
+        margin: 1.2rem 0 1.6rem;
       }
       .download {
+        position: relative;
         display: flex;
         flex-direction: column;
-        gap: 0.25rem;
+        gap: 0.2rem;
         padding: 1rem 1.1rem;
         background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 0.75rem;
+        border: 3px dashed var(--border);
+        border-radius: 1.2rem;
         text-decoration: none;
-        color: var(--text);
-        transition: transform 80ms ease, border-color 80ms ease;
+        color: var(--ink);
+        font-weight: 700;
+        transform: rotate(var(--tilt, 0deg));
+        transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
       }
-      .download:hover { transform: translateY(-2px); border-color: var(--accent); }
+      .download:nth-child(1) { --tilt: -1.4deg; }
+      .download:nth-child(2) { --tilt: 1.2deg; }
+      .download:nth-child(3) { --tilt: -0.8deg; }
+      .download:hover {
+        transform: rotate(var(--tilt)) scale(1.04) translateY(-3px);
+        border-color: var(--candy);
+        box-shadow: 6px 6px 0 var(--clown);
+      }
       .download[data-recommended='true'] {
-        border-color: var(--accent);
-        box-shadow: 0 0 0 1px var(--accent) inset;
+        border-style: solid;
+        border-color: var(--candy);
+        box-shadow: 4px 4px 0 var(--bow);
       }
-      .download .platform { font-weight: 600; font-size: 1.05rem; }
-      .download .file { color: var(--muted); font-size: 0.85rem; }
+      .download .platform {
+        font-family: 'Bungee Shade', 'Impact', cursive;
+        font-size: 1.2rem;
+        color: var(--candy);
+        letter-spacing: 0.04em;
+      }
+      .download .file { color: var(--clown-soft); font-size: 0.95rem; }
       h2 {
+        font-family: 'Bungee Shade', 'Impact', cursive;
         margin: 3rem 0 0.75rem;
-        font-size: 1.5rem;
-        letter-spacing: -0.01em;
+        font-size: clamp(1.6rem, 3.5vw, 2.4rem);
+        color: var(--candy);
+        transform: rotate(-1deg);
+        text-shadow: 3px 3px 0 var(--clown);
+      }
+      h2::after {
+        content: ' !';
+        color: var(--bow);
       }
       .rules {
         display: grid;
-        gap: 0.75rem;
-        padding-left: 1.2rem;
+        gap: 0.6rem;
+        padding-left: 1.4rem;
+        font-size: 1.1rem;
+      }
+      .rules li::marker { color: var(--clown); font-weight: 700; }
+      .rules li strong {
+        background: var(--candy);
+        color: var(--paper);
+        padding: 0 0.4rem;
+        border-radius: 0.4rem;
+        font-family: 'Bungee Shade', 'Impact', cursive;
+        letter-spacing: 0.02em;
       }
       .topologies {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 1rem;
+        gap: 1.1rem;
         margin: 1rem 0;
       }
       .topology {
         padding: 1rem;
         background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 0.75rem;
+        border: 3px solid var(--border);
+        border-radius: 1.2rem;
+        transform: rotate(var(--tilt, 0deg));
+        transition: transform 200ms ease, box-shadow 200ms ease;
+      }
+      .topology:nth-child(1) { --tilt: -1.2deg; }
+      .topology:nth-child(2) { --tilt: 1deg; }
+      .topology:nth-child(3) { --tilt: -0.8deg; }
+      .topology:nth-child(4) { --tilt: 1.6deg; }
+      .topology:hover {
+        transform: rotate(0deg) scale(1.03);
+        box-shadow: 6px 6px 0 var(--bow);
       }
       .topology svg {
         width: 100%;
-        height: 96px;
+        height: 110px;
         display: block;
         margin-bottom: 0.6rem;
+        color: var(--candy);
       }
-      .topology h3 { margin: 0 0 0.25rem; font-size: 1.05rem; }
-      .topology p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+      .topology h3 {
+        font-family: 'Bungee Shade', 'Impact', cursive;
+        margin: 0 0 0.25rem;
+        font-size: 1.2rem;
+        color: var(--mime);
+      }
+      .topology p { margin: 0; color: var(--clown-soft); font-size: 0.98rem; }
       footer {
         padding: 3rem 1.25rem 4rem;
-        color: var(--muted);
-        font-size: 0.9rem;
+        color: var(--clown-soft);
+        font-size: 1rem;
+        text-align: center;
       }
-      footer a { color: var(--muted); }
+      footer a { color: var(--candy); }
+      .honk {
+        display: inline-block;
+        background: var(--clown);
+        color: var(--mime);
+        padding: 0.2rem 0.6rem;
+        border-radius: 0.5rem;
+        font-family: 'Bungee Shade', 'Impact', cursive;
+        transform: rotate(-3deg);
+        margin: 0 0.2rem;
+      }
+      .shh {
+        display: inline-block;
+        background: var(--mime);
+        color: var(--paper);
+        padding: 0.2rem 0.6rem;
+        border-radius: 0.5rem;
+        font-family: 'Bungee Shade', 'Impact', cursive;
+        transform: rotate(2deg);
+        margin: 0 0.2rem;
+      }
+      .confetti {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: -1;
+      }
+      .confetti span {
+        position: absolute;
+        width: 8px;
+        height: 14px;
+        opacity: 0.7;
+        animation: fall linear infinite;
+      }
+      @keyframes wiggle {
+        0%, 100% { transform: rotate(-1.5deg); }
+        25% { transform: rotate(1.5deg) translateY(-2px); }
+        50% { transform: rotate(-2deg); }
+        75% { transform: rotate(1deg) translateY(1px); }
+      }
+      @keyframes bounce {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-8px) rotate(6deg); }
+      }
+      @keyframes bobLeft {
+        0%, 100% { transform: translateY(0) rotate(-3deg); }
+        50% { transform: translateY(-6px) rotate(-6deg); }
+      }
+      @keyframes bobRight {
+        0%, 100% { transform: translateY(0) rotate(4deg); }
+        50% { transform: translateY(-8px) rotate(8deg); }
+      }
+      @keyframes fall {
+        from { transform: translateY(-10vh) rotate(0deg); }
+        to { transform: translateY(110vh) rotate(720deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        h1, h1 .accent, .head.mime, .head.clown, .confetti span {
+          animation: none !important;
+        }
+        .topology, .download { transform: none !important; }
+      }
       @media (max-width: 480px) {
-        header { padding-top: 2rem; }
+        header { padding-top: 1.8rem; }
+        .heads { gap: 0.6rem; }
       }
     </style>
   </head>
   <body>
+    <div class="confetti" aria-hidden="true" id="confetti"></div>
     <header>
+      <div class="stripes" aria-hidden="true"></div>
       <div class="heads" aria-hidden="true">
-        <div class="head mime"></div>
-        <div class="head clown"></div>
+        <div class="head mime">
+          <span class="eye left"></span>
+          <span class="eye right"></span>
+          <span class="tear"></span>
+          <span class="mouth"></span>
+        </div>
+        <div class="head clown">
+          <span class="hair"></span>
+          <span class="eye left"></span>
+          <span class="eye right"></span>
+          <span class="nose"></span>
+          <span class="mouth"></span>
+        </div>
       </div>
-      <h1>{title}</h1>
+      <h1>
+        CLOWNS &amp; MIMES <span class="accent">!!</span><br />
+        on MISCELLANEOUS TOPOLOGICAL SPACES<br />
+        <span class="accent">...IN THE DARK</span>
+      </h1>
       <p class="lede">
-        A team tag game played on a dimly lit labyrinth that wraps in unusual ways. You are a mime or
-        a clown. Freeze every opponent before they freeze you. The arena might be a sphere, a torus,
-        or a Klein bottle.
+        Team tag in a dim labyrinth. Sometimes a torus. Sometimes a Klein bottle. Sometimes a sphere.
+        Often confusing. Always loud. <span class="honk">HONK</span> meets <span class="shh">shh</span>.
       </p>
     </header>
 
@@ -177,53 +414,72 @@ const releasesApi = 'https://api.github.com/repos/sean-reid/clowns-and-mimes/rel
     <section aria-labelledby="how">
       <h2 id="how">How to play</h2>
       <ol class="rules">
-        <li>Pick host, code, or strangers from the main menu.</li>
-        <li>Everyone spawns in the center square. Sixty seconds to walk the maze without tagging.</li>
-        <li>Turns alternate between the mime team and the clown team. Tag opponents during your turn to freeze them.</li>
-        <li>A frozen teammate can be unfrozen by another teammate who walks up and tags them.</li>
-        <li>Win by freezing every opponent. Lose if your whole team is frozen.</li>
+        <li>Pick <strong>HOST</strong>, <strong>CODE</strong>, or <strong>STRANGERS</strong> from the main menu.</li>
+        <li>Everyone spawns in the center square. Sixty seconds to wander before tags count.</li>
+        <li>Turns alternate between the mime team and the clown team. Tag opponents during your turn to freeze them solid.</li>
+        <li>Touch a frozen teammate to thaw them.</li>
+        <li>Freeze every opponent and bask in the maniacal laugh. Get frozen last and hear the womp womp.</li>
       </ol>
     </section>
 
     <section aria-labelledby="topology">
       <h2 id="topology">Topologies</h2>
-      <p style="color: var(--muted); max-width: 56ch;">
-        The arena is one of these. In private games the host picks. In open lobbies it is random.
+      <p style="max-width: 60ch; color: var(--clown-soft);">
+        The arena is one of these. Host picks in private games. Strangers get random.
       </p>
       <div class="topologies">
         <article class="topology">
-          <svg viewBox="0 0 120 80" aria-hidden="true">
-            <rect x="10" y="10" width="100" height="60" fill="none" stroke="#bbb" stroke-width="2" />
+          <svg viewBox="0 0 160 120" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+              <path d="M 30 78 L 96 50 L 138 60 L 70 92 Z" />
+              <path d="M 50 70 L 122 56" opacity="0.55" />
+              <path d="M 70 62 L 132 71" opacity="0.55" />
+              <path d="M 90 54 L 120 84" opacity="0.55" />
+              <path d="M 60 87 L 113 47" opacity="0.55" stroke-dasharray="3 3" />
+            </g>
           </svg>
           <h3>Plane</h3>
           <p>Finite square arena. Hard walls at the edges.</p>
         </article>
         <article class="topology">
-          <svg viewBox="0 0 120 80" aria-hidden="true">
-            <ellipse cx="60" cy="40" rx="48" ry="28" fill="none" stroke="#bbb" stroke-width="2" />
-            <ellipse cx="60" cy="40" rx="48" ry="10" fill="none" stroke="#bbb" stroke-width="1.2" stroke-dasharray="4 3" />
+          <svg viewBox="0 0 160 120" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+              <ellipse cx="80" cy="60" rx="60" ry="32" />
+              <path d="M 32 60 Q 80 36 128 60" />
+              <path d="M 40 60 Q 80 78 120 60" stroke-dasharray="3 3" />
+              <ellipse cx="80" cy="60" rx="20" ry="8" />
+              <path d="M 50 41 Q 50 60 50 79" opacity="0.55" stroke-dasharray="3 3" />
+              <path d="M 110 41 Q 110 60 110 79" opacity="0.55" stroke-dasharray="3 3" />
+              <path d="M 80 28 Q 80 60 80 92" opacity="0.55" stroke-dasharray="3 3" />
+            </g>
           </svg>
           <h3>Torus</h3>
           <p>Both axes wrap. Walk off one side, come out the opposite.</p>
         </article>
         <article class="topology">
-          <svg viewBox="0 0 120 80" aria-hidden="true">
-            <path
-              d="M20 40 C20 10 100 10 100 40 C100 70 60 70 60 40 C60 10 20 10 20 40 Z"
-              fill="none"
-              stroke="#bbb"
-              stroke-width="2"
-            />
+          <svg viewBox="0 0 160 120" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+              <path d="M 38 96 C 18 96 18 60 42 60 C 64 60 70 78 88 78 C 110 78 120 56 120 38 C 120 22 108 14 92 14 C 80 14 72 22 72 32 C 72 44 86 48 96 48 C 110 48 120 38 124 28" />
+              <path d="M 96 48 C 96 60 86 64 78 64" stroke-dasharray="3 3" />
+              <ellipse cx="40" cy="96" rx="14" ry="6" />
+              <path d="M 40 90 Q 40 96 40 102" opacity="0.55" stroke-dasharray="3 3" />
+            </g>
           </svg>
           <h3>Klein bottle</h3>
           <p>One axis wraps with a flip. The other wraps normally.</p>
         </article>
         <article class="topology">
-          <svg viewBox="0 0 120 80" aria-hidden="true">
-            <circle cx="60" cy="40" r="30" fill="none" stroke="#bbb" stroke-width="2" />
-            <path d="M30 40 Q60 25 90 40" fill="none" stroke="#bbb" stroke-width="1.2" stroke-dasharray="3 2" />
-            <path d="M30 40 Q60 55 90 40" fill="none" stroke="#bbb" stroke-width="1.2" />
-            <path d="M60 10 L60 70" fill="none" stroke="#bbb" stroke-width="0.8" stroke-dasharray="2 2" />
+          <svg viewBox="0 0 160 120" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+              <circle cx="80" cy="60" r="44" />
+              <ellipse cx="80" cy="60" rx="44" ry="14" />
+              <path d="M 80 16 Q 60 60 80 104" />
+              <path d="M 80 16 Q 100 60 80 104" />
+              <path d="M 80 16 Q 50 60 80 104" opacity="0.55" stroke-dasharray="3 3" />
+              <path d="M 80 16 Q 110 60 80 104" opacity="0.55" stroke-dasharray="3 3" />
+              <path d="M 36 60 Q 80 46 124 60" opacity="0.55" stroke-dasharray="3 3" />
+              <path d="M 36 60 Q 80 74 124 60" opacity="0.55" stroke-dasharray="3 3" />
+            </g>
           </svg>
           <h3>Sphere</h3>
           <p>Walk a great circle. There is no edge to fall off.</p>
@@ -235,21 +491,38 @@ const releasesApi = 'https://api.github.com/repos/sean-reid/clowns-and-mimes/rel
       <h2 id="controls">Controls</h2>
       <ul class="rules">
         <li><strong>WASD</strong> to walk</li>
-        <li><strong>Mouse</strong> to look</li>
-        <li><strong>Hold Shift</strong> to sprint until your stamina runs out</li>
-        <li><strong>Left click</strong> to tag or unfreeze when you are close enough</li>
-        <li><strong>Esc</strong> to release the cursor</li>
+        <li><strong>MOUSE</strong> to look</li>
+        <li><strong>HOLD SHIFT</strong> to sprint until your stamina runs out</li>
+        <li><strong>LEFT CLICK</strong> to tag or unfreeze when you are close enough</li>
+        <li><strong>ESC</strong> to release the cursor</li>
       </ul>
     </section>
 
     <footer>
       <p>
         Open source on <a href={githubUrl}>GitHub</a>. MIT licensed. Built by Sean Reid.
-        Found a bug? <a href={`${githubUrl}/issues/new/choose`}>File an issue.</a>
+        Bug? <a href={`${githubUrl}/issues/new/choose`}>HONK at the issue tracker.</a>
       </p>
     </footer>
 
-    <script type="module" define:vars={{ releasesApi, githubUrl }}>
+    <script type="module" define:vars={{ releasesApi }}>
+      const COLORS = ['#ff3855', '#38c2ff', '#ffd400', '#ff8be0', '#ffffff'];
+
+      function spawnConfetti() {
+        const container = document.getElementById('confetti');
+        if (!container) return;
+        const count = window.matchMedia('(max-width: 600px)').matches ? 12 : 32;
+        for (let i = 0; i < count; i += 1) {
+          const piece = document.createElement('span');
+          piece.style.left = `${Math.random() * 100}vw`;
+          piece.style.background = COLORS[i % COLORS.length];
+          piece.style.animationDuration = `${6 + Math.random() * 6}s`;
+          piece.style.animationDelay = `${-Math.random() * 8}s`;
+          piece.style.transform = `rotate(${Math.random() * 360}deg)`;
+          container.appendChild(piece);
+        }
+      }
+
       function platform() {
         const ua = navigator.userAgent.toLowerCase();
         if (ua.includes('mac')) return 'macos';
@@ -258,14 +531,15 @@ const releasesApi = 'https://api.github.com/repos/sean-reid/clowns-and-mimes/rel
       }
 
       function recommendCurrent() {
-        const id = `dl-${platform()}`;
-        const el = document.getElementById(id);
+        const el = document.getElementById(`dl-${platform()}`);
         if (el) el.setAttribute('data-recommended', 'true');
       }
 
       async function hydrateFromLatestRelease() {
         try {
-          const res = await fetch(releasesApi, { headers: { accept: 'application/vnd.github+json' } });
+          const res = await fetch(releasesApi, {
+            headers: { accept: 'application/vnd.github+json' },
+          });
           if (!res.ok) return;
           const data = await res.json();
           const assets = Array.isArray(data.assets) ? data.assets : [];
@@ -287,6 +561,7 @@ const releasesApi = 'https://api.github.com/repos/sean-reid/clowns-and-mimes/rel
         }
       }
 
+      spawnConfetti();
       recommendCurrent();
       hydrateFromLatestRelease();
     </script>
