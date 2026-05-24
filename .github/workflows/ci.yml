@@ -98,10 +98,26 @@ jobs:
           unzip -q godot.zip
           sudo mv Godot_v4.3-stable_linux.x86_64 /usr/local/bin/godot
           sudo chmod +x /usr/local/bin/godot
-      - name: Validate project opens
-        run: godot --headless --path game --quit
+      - name: Validate project parses
+        run: |
+          output=$(godot --headless --path game --quit 2>&1 || true)
+          echo "$output"
+          if echo "$output" | grep -qE "Parse Error|Compile Error|Failed to load script"; then
+            echo "::error::Godot script parse or compile errors detected"
+            exit 1
+          fi
       - name: Run game unit tests
-        run: godot --headless --path game -s res://tests/test_runner.gd
+        run: |
+          output=$(godot --headless --path game -s res://tests/test_runner.gd 2>&1)
+          echo "$output"
+          if echo "$output" | grep -qE "Parse Error|Compile Error|Failed to load script"; then
+            echo "::error::Godot script parse or compile errors detected"
+            exit 1
+          fi
+          if echo "$output" | grep -qE "^FAIL "; then
+            echo "::error::Game tests failed"
+            exit 1
+          fi
 
   security-audit:
     name: Dependency audit

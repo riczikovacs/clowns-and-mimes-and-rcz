@@ -1,0 +1,21 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/exclamation_marker.gd" id="1_em"]
+
+[sub_resource type="BoxMesh" id="stem"]
+size = Vector3(0.12, 0.5, 0.12)
+
+[sub_resource type="SphereMesh" id="dot"]
+radius = 0.1
+height = 0.2
+
+[node name="ExclamationMarker" type="Node3D"]
+script = ExtResource("1_em")
+
+[node name="Stem" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.4, 0)
+mesh = SubResource("stem")
+
+[node name="Dot" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.05, 0)
+mesh = SubResource("dot")
