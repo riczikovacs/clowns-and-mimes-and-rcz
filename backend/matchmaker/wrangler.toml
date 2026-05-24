@@ -5,14 +5,14 @@ compatibility_flags = ["nodejs_compat"]
 
 [env.dev]
 name = "cm-matchmaker-dev"
-vars = { ROOM_WORKER = "cm-room-dev", ENV = "dev" }
+vars = { ROOM_WORKER = "cm-room-dev", WORKERS_SUBDOMAIN = "seanreid", ENV = "dev" }
 kv_namespaces = [
   { binding = "LOBBY_CODES", id = "3138395ad3ec4b4b8fbbf74d8798cb83" },
 ]
 
 [env.production]
 name = "cm-matchmaker"
-vars = { ROOM_WORKER = "cm-room", ENV = "production" }
+vars = { ROOM_WORKER = "cm-room", WORKERS_SUBDOMAIN = "seanreid", ENV = "production" }
 kv_namespaces = [
   { binding = "LOBBY_CODES", id = "d20f481e8a1749948156a56c08b9a07f" },
 ]
