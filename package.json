@@ -4,7 +4,7 @@
   "private": true,
   "description": "Clowns and Mimes, on Miscellaneous Topological Spaces... IN THE DARK",
   "license": "MIT",
-  "author": "Sean Reid <seanreid.mail@gmail.com>",
+  "author": "Sean Reid",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sean-reid/clowns-and-mimes.git"
