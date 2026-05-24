@@ -32,8 +32,6 @@ wrangler.toml.bak
 # Godot
 game/.godot/
 game/.import/
-game/export.cfg
-game/export_presets.cfg
 game/builds/
 game/*.translation
 game/*.import

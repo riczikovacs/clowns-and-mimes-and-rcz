@@ -14,6 +14,17 @@ export interface Env {
 const VALID_TOPOLOGIES: readonly Topology[] = ['plane', 'torus', 'klein', 'sphere'];
 const CODE_LENGTH = 6;
 const CODE_ALPHABET = 'BCDFGHJKLMNPQRSTVWXYZ23456789';
+const OPEN_ROOM_TTL_S = 60 * 30;
+const PRIVATE_ROOM_TTL_S = 60 * 60 * 6;
+const OPEN_ROOM_PREFIX = 'open:';
+const OPEN_ROOM_SOFT_CAPACITY = 12;
+
+interface OpenRoomEntry {
+  roomId: string;
+  topology: Topology;
+  joined: number;
+  createdAt: number;
+}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -22,20 +33,20 @@ export default {
       return json({ ok: true, env: env.ENV });
     }
     if (req.method === 'POST' && url.pathname === '/lobby') {
-      return createLobby(req, env);
+      return createPrivateLobby(req, env);
     }
     const joinMatch = url.pathname.match(/^\/lobby\/([A-Z0-9]+)\/join$/);
     if (req.method === 'POST' && joinMatch) {
       return joinByCode(joinMatch[1]!, env);
     }
     if (req.method === 'POST' && url.pathname === '/open/join') {
-      return joinOpen(env);
+      return joinOpenRoom(env);
     }
     return notFound();
   },
 };
 
-async function createLobby(req: Request, env: Env): Promise<Response> {
+async function createPrivateLobby(req: Request, env: Env): Promise<Response> {
   let body: MatchmakeCreateBody;
   try {
     body = (await req.json()) as MatchmakeCreateBody;
@@ -50,10 +61,13 @@ async function createLobby(req: Request, env: Env): Promise<Response> {
   await env.LOBBY_CODES.put(
     code,
     JSON.stringify({ roomId, topology: body.topology, createdAt: Date.now() }),
-    { expirationTtl: 60 * 60 * 6 },
+    { expirationTtl: PRIVATE_ROOM_TTL_S },
   );
-  const wsUrl = wsUrlFor(env, roomId);
-  const res: MatchmakeCreateResponse = { code, roomId, wsUrl };
+  const res: MatchmakeCreateResponse = {
+    code,
+    roomId,
+    wsUrl: wsUrlFor(env, roomId),
+  };
   return json(res);
 }
 
@@ -68,18 +82,39 @@ async function joinByCode(code: string, env: Env): Promise<Response> {
   return json(res);
 }
 
-async function joinOpen(env: Env): Promise<Response> {
-  // First cut: every join opens a fresh room with a random topology.
-  // A future revision will coalesce joins into rooms with capacity using a queue Durable Object.
+async function joinOpenRoom(env: Env): Promise<Response> {
+  const reusable = await findReusableOpenRoom(env);
+  if (reusable !== null) {
+    return json<MatchmakeJoinResponse>({
+      roomId: reusable.roomId,
+      wsUrl: wsUrlFor(env, reusable.roomId),
+    });
+  }
   const topology = VALID_TOPOLOGIES[Math.floor(Math.random() * VALID_TOPOLOGIES.length)]!;
   const roomId = crypto.randomUUID();
-  await env.LOBBY_CODES.put(
-    `open:${roomId}`,
-    JSON.stringify({ roomId, topology, open: true, createdAt: Date.now() }),
-    { expirationTtl: 60 * 30 },
-  );
-  const res: MatchmakeJoinResponse = { roomId, wsUrl: wsUrlFor(env, roomId) };
-  return json(res);
+  const entry: OpenRoomEntry = { roomId, topology, joined: 1, createdAt: Date.now() };
+  await env.LOBBY_CODES.put(`${OPEN_ROOM_PREFIX}${roomId}`, JSON.stringify(entry), {
+    expirationTtl: OPEN_ROOM_TTL_S,
+  });
+  return json<MatchmakeJoinResponse>({ roomId, wsUrl: wsUrlFor(env, roomId) });
+}
+
+async function findReusableOpenRoom(env: Env): Promise<OpenRoomEntry | null> {
+  const list = await env.LOBBY_CODES.list({ prefix: OPEN_ROOM_PREFIX, limit: 50 });
+  let best: OpenRoomEntry | null = null;
+  for (const item of list.keys) {
+    const raw = await env.LOBBY_CODES.get(item.name);
+    if (!raw) continue;
+    const entry = JSON.parse(raw) as OpenRoomEntry;
+    if (entry.joined >= OPEN_ROOM_SOFT_CAPACITY) continue;
+    if (!best || entry.joined > best.joined) best = entry;
+  }
+  if (best === null) return null;
+  best.joined += 1;
+  await env.LOBBY_CODES.put(`${OPEN_ROOM_PREFIX}${best.roomId}`, JSON.stringify(best), {
+    expirationTtl: OPEN_ROOM_TTL_S,
+  });
+  return best;
 }
 
 async function freshCode(env: Env): Promise<string> {
@@ -102,11 +137,10 @@ function randomCode(): string {
 }
 
 function wsUrlFor(env: Env, roomId: string): string {
-  // The room worker accepts WS upgrades on /ws/<roomId>.
   return `wss://${env.ROOM_WORKER}.workers.dev/ws/${roomId}`;
 }
 
-function json(body: unknown, status = 200): Response {
+function json<T>(body: T, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
