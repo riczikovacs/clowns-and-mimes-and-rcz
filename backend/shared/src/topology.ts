@@ -3,8 +3,19 @@ import type { Topology, Vec2 } from './protocol.ts';
 export const WORLD_WIDTH = 80;
 
 /**
+ * Per-topology playfield extents in world units. Klein is the only topology
+ * with a non-square playfield: the canonical x domain spans 2 * WORLD_WIDTH
+ * so the bottle's z-orientation flip is walkable space (a mirrored right
+ * half) instead of an instantaneous snap at the seam. All other topologies
+ * are WORLD_WIDTH on each axis.
+ */
+export function topologyExtents(topology: Topology, width: number): { x: number; z: number } {
+  if (topology === 'klein') return { x: 2 * width, z: width };
+  return { x: width, z: width };
+}
+
+/**
  * Wrap a position into the canonical domain for the topology.
- * The domain is the centered square [-w/2, w/2] x [-w/2, w/2].
  * Server and client must agree on this so that rendering, physics, and
  * pathfinding all see the same coordinate space.
  */
@@ -24,21 +35,26 @@ export function wrapPosition(p: Vec2, topology: Topology, width: number): Vec2 {
       };
     }
     case 'klein': {
-      const wrappedX = wrap(p.x, width);
-      const xCrossings = Math.floor((p.x + half) / width);
-      const flipZ = xCrossings % 2 !== 0;
-      const z0 = flipZ ? -p.z : p.z;
+      // Double cover: the canonical x domain is 2*width and the second half
+      // (mirrored across z=0) is part of the walkable surface. Both axes
+      // wrap modular - the Klein topology is embedded in the geometry's
+      // z-mirror symmetry, not in an instant flip at the seam.
       return {
-        x: wrappedX,
-        z: wrap(z0, width),
+        x: wrap(p.x, 2 * width),
+        z: wrap(p.z, width),
       };
     }
     case 'sphere': {
-      // Stereographic-style wrap. Outside the disk we wrap to the antipode.
-      const r = Math.sqrt(p.x * p.x + p.z * p.z);
-      if (r <= half) return { x: p.x, z: p.z };
-      const k = (width - r) / r;
-      return { x: p.x * k, z: p.z * k };
+      // First-cut sphere uses torus-like modular wrap. The 3x2 face packing
+      // fills the full playfield, so modular wrap is the right primitive for
+      // crossing between faces - close enough to the eventual cube-mapped
+      // adjacency to feel right at small step sizes.
+      // TODO: proper cube-net edge adjacency with the right rotations when
+      // crossing a face boundary.
+      return {
+        x: wrap(p.x, width),
+        z: wrap(p.z, width),
+      };
     }
   }
 }
@@ -53,24 +69,54 @@ export function topologyDistance(a: Vec2, b: Vec2, topology: Topology, width: nu
       return Math.hypot(dx, dz);
     }
     case 'klein': {
-      const dxA = wrappedDelta(a.x, b.x, width);
-      const flipped = Math.abs(a.x - b.x) > width / 2;
-      const bz = flipped ? -b.z : b.z;
-      const dzA = wrappedDelta(a.z, bz, width);
-      return Math.hypot(dxA, dzA);
+      // Klein is a 2W*W torus by virtue of the geometric z-mirror symmetry
+      // of its right half, so shortest path is plain modular both axes.
+      const dx = wrappedDelta(a.x, b.x, 2 * width);
+      const dz = wrappedDelta(a.z, b.z, width);
+      return Math.hypot(dx, dz);
     }
     case 'sphere': {
-      const half = width / 2;
-      const ax = (a.x / half) * Math.PI;
-      const az = (a.z / half) * Math.PI;
-      const bx = (b.x / half) * Math.PI;
-      const bz = (b.z / half) * Math.PI;
-      const dx = Math.cos(ax) * Math.cos(az) - Math.cos(bx) * Math.cos(bz);
-      const dy = Math.sin(ax) * Math.cos(az) - Math.sin(bx) * Math.cos(bz);
-      const dz = Math.sin(az) - Math.sin(bz);
-      return half * Math.acos(1 - (dx * dx + dy * dy + dz * dz) / 2);
+      // First-cut sphere distance mirrors the wrap: torus-like shortest path
+      // across both axes.
+      // TODO: proper sphere geodesic distance across cube faces.
+      const dx = wrappedDelta(a.x, b.x, width);
+      const dz = wrappedDelta(a.z, b.z, width);
+      return Math.hypot(dx, dz);
     }
   }
+}
+
+/**
+ * Shortest-path delta from `from` to `to` under the given topology, normalized
+ * to a unit vector. Returns (0, 0) when the points coincide. On wrapping
+ * topologies this picks the direction that crosses the seam when that is
+ * shorter than the in-domain delta; bots that ignore this end up zigzagging
+ * at seams because the Euclidean delta points back across the whole arena.
+ */
+export function wrappedUnitDelta(from: Vec2, to: Vec2, topology: Topology, width: number): Vec2 {
+  let dx: number;
+  let dz: number;
+  switch (topology) {
+    case 'plane': {
+      dx = to.x - from.x;
+      dz = to.z - from.z;
+      break;
+    }
+    case 'torus':
+    case 'sphere': {
+      dx = wrappedDelta(from.x, to.x, width);
+      dz = wrappedDelta(from.z, to.z, width);
+      break;
+    }
+    case 'klein': {
+      dx = wrappedDelta(from.x, to.x, 2 * width);
+      dz = wrappedDelta(from.z, to.z, width);
+      break;
+    }
+  }
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-4) return { x: 0, z: 0 };
+  return { x: dx / len, z: dz / len };
 }
 
 function clamp(v: number, lo: number, hi: number): number {

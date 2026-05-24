@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { gapJitter, generateWalls, pathCrossesWall, RING_RADII } from './labyrinth.ts';
+import { gapJitter, generateWalls, pathCrossesWall } from './labyrinth.ts';
+import { WORLD_WIDTH } from './topology.ts';
+import { SPHERE_FACE_COLS, SPHERE_FACE_ROWS } from './gridMaze.ts';
 
 describe('gapJitter', () => {
   it('returns 0 or 1', () => {
@@ -34,40 +36,163 @@ describe('generateWalls', () => {
     }
   });
 
-  it('places every wall on one of the configured ring radii', () => {
-    const walls = generateWalls(99);
+  it('produces axis-aligned walls on plane (grid maze)', () => {
+    const walls = generateWalls(99, 'plane');
+    expect(walls.length).toBeGreaterThan(0);
     for (const w of walls) {
-      const midX = (w.ax + w.bx) / 2;
-      const midZ = (w.az + w.bz) / 2;
-      const radius = Math.hypot(midX, midZ);
-      const onRing = RING_RADII.some((r) => Math.abs(r - radius) < 0.01);
-      expect(onRing).toBe(true);
+      const axisAligned = w.ax === w.bx || w.az === w.bz;
+      expect(axisAligned).toBe(true);
     }
   });
 
-  it('produces a reasonable wall count for the default config', () => {
-    const walls = generateWalls(1);
-    // 6 rings * 12 segments * 4 subdivisions = 288 max, minus gap subdivisions.
-    expect(walls.length).toBeGreaterThan(150);
-    expect(walls.length).toBeLessThan(288);
+  it('produces a non-trivial wall count for the default plane config', () => {
+    // A 10x10 grid maze on plane has at most 2 walls per cell (east + north)
+    // plus the west and south boundary walls, then the spanning tree opens
+    // some up. The number is well-defined for a given seed; sanity-check the
+    // ballpark.
+    const walls = generateWalls(1, 'plane');
+    expect(walls.length).toBeGreaterThan(50);
+    expect(walls.length).toBeLessThan(300);
+  });
+
+  it('produces axis-aligned walls on a sphere (cube-mapped grid)', () => {
+    const walls = generateWalls(7, 'sphere');
+    expect(walls.length).toBeGreaterThan(0);
+    for (const w of walls) {
+      const axisAligned = w.ax === w.bx || w.az === w.bz;
+      expect(axisAligned).toBe(true);
+    }
   });
 });
 
 describe('pathCrossesWall', () => {
-  const walls = generateWalls(123);
-
-  it('blocks at least one radial path from the center to the outer edge', () => {
-    // The labyrinth has gap connectors so not every angle is blocked, but at
-    // least some radial sweep must cross a wall. If none do the maze has no
-    // walls at all.
-    const angles = [0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8];
-    const blocked = angles.some((a) =>
-      pathCrossesWall(walls, 0, 0, 40 * Math.cos(a), 40 * Math.sin(a)),
-    );
+  it('blocks at least one straight path across a plane maze', () => {
+    // With the new grid layout we can't rely on rings; pick a few diagonals
+    // across the whole playfield and require at least one to hit a wall.
+    const walls = generateWalls(123, 'plane');
+    const blocked = [
+      [-39, -39, 39, 39],
+      [-39, 39, 39, -39],
+      [0, -39, 0, 39],
+      [-39, 0, 39, 0],
+    ].some(([ax, az, bx, bz]) => pathCrossesWall(walls, ax!, az!, bx!, bz!));
     expect(blocked).toBe(true);
   });
 
-  it('allows a path that stays inside the innermost ring', () => {
-    expect(pathCrossesWall(walls, 0, 0, 1, 1)).toBe(false);
+  it('rejects movement that would exit the plane playfield', () => {
+    // Plane is fully bounded by grid-maze boundary walls now, so any move
+    // crossing x = +-half or z = +-half should be blocked.
+    const walls = generateWalls(123, 'plane');
+    expect(pathCrossesWall(walls, 0, 0, 50, 0)).toBe(true);
+    expect(pathCrossesWall(walls, 0, 0, 0, -50)).toBe(true);
+  });
+});
+
+describe('generateWalls (plane, torus, klein use grid maze)', () => {
+  it('produces axis-aligned walls on a torus', () => {
+    const walls = generateWalls(42, 'torus');
+    expect(walls.length).toBeGreaterThan(0);
+    for (const w of walls) {
+      const axisAligned = w.ax === w.bx || w.az === w.bz;
+      expect(axisAligned).toBe(true);
+    }
+  });
+
+  it('places walls around the entire boundary on plane', () => {
+    const walls = generateWalls(123, 'plane');
+    const half = 40;
+    const onLeft = walls.some((w) => w.ax === -half && w.bx === -half);
+    const onRight = walls.some((w) => w.ax === half && w.bx === half);
+    const onTop = walls.some((w) => w.az === half && w.bz === half);
+    const onBottom = walls.some((w) => w.az === -half && w.bz === -half);
+    expect(onLeft).toBe(true);
+    expect(onRight).toBe(true);
+    expect(onTop).toBe(true);
+    expect(onBottom).toBe(true);
+  });
+
+  it('omits walls on the sphere playfield boundary', () => {
+    const walls = generateWalls(7, 'sphere');
+    const half = 40;
+    const anyOnBoundary = walls.some(
+      (w) =>
+        (w.ax === -half && w.bx === -half) ||
+        (w.ax === half && w.bx === half) ||
+        (w.az === half && w.bz === half) ||
+        (w.az === -half && w.bz === -half),
+    );
+    expect(anyOnBoundary).toBe(false);
+  });
+
+  it('omits walls along the 3x2 sphere face boundaries', () => {
+    // A wall lying on the vertical seam between two face columns at
+    // x = -half + col * (WIDTH / 3) would visually bisect the maze. Same for
+    // the horizontal seam at z = 0. Both must stay open so the topology can
+    // wrap a player across them.
+    const walls = generateWalls(7, 'sphere');
+    const half = WORLD_WIDTH / 2;
+    const faceWidth = WORLD_WIDTH / SPHERE_FACE_COLS;
+    const faceHeight = WORLD_WIDTH / SPHERE_FACE_ROWS;
+    const verticalSeams: number[] = [];
+    for (let i = 1; i < SPHERE_FACE_COLS; i += 1) {
+      verticalSeams.push(-half + i * faceWidth);
+    }
+    const horizontalSeams: number[] = [];
+    for (let i = 1; i < SPHERE_FACE_ROWS; i += 1) {
+      horizontalSeams.push(-half + i * faceHeight);
+    }
+    for (const w of walls) {
+      const isVerticalSeg = w.ax === w.bx;
+      const isHorizontalSeg = w.az === w.bz;
+      if (isVerticalSeg) {
+        for (const seam of verticalSeams) {
+          expect(w.ax).not.toBeCloseTo(seam, 6);
+        }
+      }
+      if (isHorizontalSeg) {
+        for (const seam of horizontalSeams) {
+          expect(w.az).not.toBeCloseTo(seam, 6);
+        }
+      }
+    }
+  });
+
+  it('produces different walls for sphere and torus at the same seed', () => {
+    // Six independent face mazes traverse a different topology than one big
+    // wrapping grid, so the resulting wall lists must diverge.
+    const s = generateWalls(2026, 'sphere');
+    const t = generateWalls(2026, 'torus');
+    expect(s).not.toEqual(t);
+  });
+
+  it('skips walls along the wrap seam', () => {
+    // The grid maze should never put a wall on the outermost boundary of the
+    // playfield, since the topology already collapses both edges to the same
+    // line on a wrap surface. Picking up such a wall would visually double up.
+    // Klein's playfield is the double cover: x in [-W, W], z in [-W/2, W/2].
+    const walls = generateWalls(7, 'klein');
+    const halfX = 80; // klein x-extent is 2 * WORLD_WIDTH, so half is W
+    const halfZ = 40; // klein z-extent is WORLD_WIDTH, so half is W/2
+    for (const w of walls) {
+      const onLeft = w.ax === -halfX && w.bx === -halfX;
+      const onRight = w.ax === halfX && w.bx === halfX;
+      const onTop = w.az === halfZ && w.bz === halfZ;
+      const onBottom = w.az === -halfZ && w.bz === -halfZ;
+      expect(onLeft || onRight || onTop || onBottom).toBe(false);
+    }
+  });
+
+  it('is deterministic across calls for the same seed and topology', () => {
+    const a = generateWalls(99, 'torus');
+    const b = generateWalls(99, 'torus');
+    expect(a).toEqual(b);
+  });
+
+  it('torus and klein at the same seed differ', () => {
+    // Klein flips the row index when crossing the x-seam, so the spanning
+    // tree explores a different cell set and the wall list cannot match.
+    const t = generateWalls(2026, 'torus');
+    const k = generateWalls(2026, 'klein');
+    expect(t).not.toEqual(k);
   });
 });

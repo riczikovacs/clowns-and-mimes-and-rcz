@@ -31,16 +31,15 @@ export interface PlayerState {
   yaw: number;
   frozen: boolean;
   sprintEnergy: number;
+  // Sprint hysteresis: once energy depletes to 0 mid-sprint the player
+  // drops to walk and stays there until energy regens past
+  // SPRINT_ENGAGE_THRESHOLD. Without this latch a sprint-held key would
+  // flip-flop between WALK_SPEED and SPRINT_SPEED tick-to-tick at the
+  // 0-energy line, producing visible 20 Hz jitter.
+  sprinting: boolean;
 }
 
-export type RoomPhase =
-  | 'filling'
-  | 'locked'
-  | 'countdown'
-  | 'free_roam'
-  | 'turn_mime'
-  | 'turn_clown'
-  | 'ended';
+export type RoomPhase = 'filling' | 'locked' | 'free_roam' | 'turn_mime' | 'turn_clown' | 'ended';
 
 export interface RoomSnapshot {
   v: typeof PROTOCOL_VERSION;
@@ -75,8 +74,13 @@ export type ServerToClient =
 export type GameEvent =
   | { kind: 'tagged'; victimId: string; attackerId: string; team: Team }
   | { kind: 'saved'; victimId: string; saviorId: string }
-  | { kind: 'phase'; phase: RoomPhase }
+  // cryIndex is the server-picked battle-cry slot for turn_mime / turn_clown
+  // phases. All clients render the same cry by indexing into their local
+  // MIME_BATTLE_CRIES / CLOWN_BATTLE_CRIES list. Omitted on non-turn phases.
+  | { kind: 'phase'; phase: RoomPhase; cryIndex?: number }
   | { kind: 'win'; team: Team };
+
+export const BATTLE_CRY_COUNT = 8;
 
 export type ErrorCode =
   | 'version_mismatch'

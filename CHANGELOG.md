@@ -6,6 +6,50 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-24
+
+Online play overhaul: client-side prediction with server reconciliation, 60 Hz server tick, Klein bottle redesigned as a true double cover, sprint hysteresis, smoother bot motion and routing, and a host lobby that gives you time to share the code.
+
+### Added
+
+- Client-side prediction with server reconciliation for the local player. Each input is buffered with its seq number; on every delta the client snaps to the server's authoritative position at the ack and replays the unacked inputs through the same shared `stepMovement` math. Eliminates the 30-plus unit attacker/server divergence that was rejecting tag attempts on direct contact.
+- 60 Hz server tick and matching 60 Hz client input cadence. Reconciliation corrections now arrive every ~16.7 ms with proportionally smaller snaps; previous 50 ms windows were visible as per-delta judder.
+- Render-rate local-player prediction. `_advance_local_prediction` runs in `_process` (variable, vsync-tied) and the vsync mode switched to mailbox so a 120 Hz panel hits its refresh ceiling.
+- True Klein bottle as a 2W x W double cover. The right half of the maze is the z-mirror of the left half so the bottle's orientation flip is walkable space rather than an instantaneous teleport at the seam.
+- Wrap-tile visual clones for torus, Klein, and sphere. Players standing at a seam see the wrapped content instead of a void edge.
+- Topology label on the HUD ("on the Klein Bottle", etc.) so playtesters know which surface is active.
+- Host lobby keeps the code on screen with Copy and Start buttons; clipboard via `DisplayServer.clipboard_set`.
+- Bots route around stationary bodies. `BotPathfinder.nextWaypointAvoiding(...)` treats every other player's cell as solid for the chase/rescue BFS, so a frozen enemy in a corridor no longer pins the bot.
+- Bot direction smoothing: wrap-aware `wrappedUnitDelta` keeps movement headings consistent across seams; yaw is interpolated with a per-tick angular-velocity cap so slide-fallback corners don't snap the avatar 90 degrees.
+- Sprint hysteresis. Once sprint depletes to 0 it stays in walk until energy regens past `SPRINT_ENGAGE_THRESHOLD` (20). Holding shift past the 0-energy line no longer oscillates between WALK_SPEED and SPRINT_SPEED at the tick rate.
+- Smart matchmaker is a Durable Object now: humans-first open-room routing with live human/bot counts, no cross-edge race for newly opened rooms.
+- Humans displace bots from their preferred team when they join, so a late human always lands on a human-friendly roster.
+- Server-side lag compensation rewinds victim position for client tag attempts; `tag_result.reason` carries specific rejection codes (`out_of_range:<dist>`, `not_your_turn`, `wall_in_way`, `same_team`, ...) so the HUD and diagnostics surface why a tag missed.
+
+### Changed
+
+- Movement math lives in `@cm/shared/movement` and is mirrored verbatim in `game/scripts/movement.gd`. Both server `simulateHumans` and client predictor call the same `stepMovement`, so reconciliation replay lands on the same position the server computed.
+- `input.move` on the wire is now world-space XZ (rotated by yaw on the client). Reconciliation replay no longer needs to remember historical yaw per input.
+- `RoomPhase` drops the pre-match countdown. `filling` goes straight to `free_roam` then `turn_mime` / `turn_clown`, with a 30 s free-roam window.
+- Lobby code rendering: the seeded "10" countdown placeholder is gone; the label stays blank until the first phase update arrives.
+- HUD event log capped to 5 lines with a fade gradient on older entries.
+- Open-lobby route stamps the chosen topology onto the wsUrl so the Room DO applies the correct topology before the first client connects (fixed everyone landing on plane).
+- Website drops the lede tagline above the download poster.
+
+### Fixed
+
+- Tagging within contact range against humans now succeeds; the previous client/server position drift was causing `out_of_range` rejections at near-zero player distance.
+- Bot rescue no longer stalls behind a frozen enemy in the corridor; routes around via the new avoid-set BFS.
+- Bot motion no longer jitters near wrap seams (Euclidean delta replaced with wrap-aware delta).
+- Klein wrap renders smoothly: no instant z-flip on x-seam crossings.
+- Sphere wrap tiles render the playfield neighbors instead of a void edge.
+- Server stops re-applying already-consumed inputs when the client falls a tick behind, so reconciliation no longer snaps backward each delta.
+
+### Known follow-ups
+
+- macOS code signing and notarization once the Apple Developer ID is wired into CI (Apple Team ID is on hand).
+- Strict cube-net adjacency for sphere (current wrap is a torus-style approximation).
+
 ## [0.1.2] - 2026-05-24
 
 Re-cuts v0.1.1 with the macOS installer attached. The 0.1.1 macOS build failed at export because the preset was configured for App Store distribution, which requires a signing identity we do not have.

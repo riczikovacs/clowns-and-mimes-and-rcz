@@ -1,9 +1,10 @@
 extends CharacterBody3D
 
 ## Local or remote player. WASD + mouse + sprint for the local one, network or
-## bot inputs drive remote bodies. While frozen, input is disabled and a small
-## floating exclamation marker is rendered above the head for everyone except
-## the player themselves.
+## bot inputs drive remote bodies. While frozen, the body cannot move (velocity
+## is held at zero) but mouse look stays active so the player can watch the
+## round play out around them. A small floating exclamation marker is rendered
+## above the head for everyone except the player themselves.
 
 signal sprint_changed(value: float)
 signal frozen_changed(frozen: bool)
@@ -21,6 +22,13 @@ const LOOK_SENSITIVITY := 0.0025
 @export var bot: bool = false
 @export var is_local: bool = true
 @export var display_name: String = ""
+# When true, arena.gd drives this body's X/Z position via the shared movement
+# predictor instead of player.gd reading input directly. Mirrors what the
+# server is computing, so the position the server sees matches what the
+# client predicts.
+var predicted_externally: bool = false
+var _external_planar_speed: float = 0.0
+var _external_sprinting: bool = false
 
 var sprint_energy: float = MAX_SPRINT:
 	set(value):
@@ -45,6 +53,29 @@ var frozen: bool = false:
 var marker_instance: Node3D = null
 var footstep_player: AudioStreamPlayer3D = null
 
+# Remote players never have velocity written. apply_remote_state only sets
+# global_position, so velocity stays at zero and _update_footsteps keeps the
+# volume curve muted. Track the delta between consecutive remote updates to
+# derive an effective planar speed for the spatial footstep audio. Without
+# this, remote players walked silent.
+var _last_remote_position: Vector3 = Vector3.ZERO
+var _last_remote_time_s: float = 0.0
+var _remote_planar_speed: float = 0.0
+
+# Remote-position interpolation. The server ticks at 20 Hz so snapshots
+# arrive every ~50 ms; without smoothing the body teleports between samples
+# and the screen jitters. _interp_prev is the position the body should be at
+# when a new snapshot arrives; _interp_target is the position to ride toward
+# over the next snapshot interval. _interp_dt is the measured interval (we do
+# not assume 50 ms in case the server tick rate ever changes).
+var _interp_prev_position: Vector3 = Vector3.ZERO
+var _interp_prev_yaw: float = 0.0
+var _interp_target_position: Vector3 = Vector3.ZERO
+var _interp_target_yaw: float = 0.0
+var _interp_start_time_s: float = 0.0
+var _interp_dt_s: float = 0.05
+var _interp_armed: bool = false
+
 func _ready() -> void:
 	if is_local and not bot:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -68,18 +99,31 @@ func _setup_footsteps() -> void:
 	add_child(footstep_player)
 	footstep_player.play()
 
+const HEAD_SHADER := preload("res://shaders/avatar_head.gdshader")
+const MIME_BACK_COLOR := Color(0.10, 0.14, 0.40)
+const CLOWN_BACK_COLOR := Color(0.30, 0.05, 0.10)
+
 func _apply_head_texture() -> void:
-	var texture: Texture2D = AssetPaths.try_load_texture(team)
-	if texture == null or head == null:
+	if head == null:
 		return
-	var mat := StandardMaterial3D.new()
-	mat.albedo_texture = texture
-	mat.albedo_color = Color.WHITE
+	var texture: Texture2D = AssetPaths.try_load_texture(team)
+	# Shader splits the sphere: face texture on the front hemisphere, dark
+	# team color on the back. Mime back is dark blue, clown back is dark red.
+	# The shader handles a null face_texture by falling back to a uniform-
+	# colored front, but in practice we always have textures imported.
+	var mat := ShaderMaterial.new()
+	mat.shader = HEAD_SHADER
+	mat.set_shader_parameter("back_color", CLOWN_BACK_COLOR if team == "clown" else MIME_BACK_COLOR)
+	if texture != null:
+		mat.set_shader_parameter("face_texture", texture)
 	head.material_override = mat
 
 func _input(event: InputEvent) -> void:
-	if bot or not is_local or frozen:
+	if bot or not is_local:
 		return
+	# Mouse look stays available while frozen so the player can watch their
+	# team play around them. Movement input is gated separately in
+	# _physics_process; the frozen branch there holds velocity at zero.
 	if event is InputEventMouseMotion and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-event.relative.x * LOOK_SENSITIVITY)
 		camera.rotate_x(-event.relative.y * LOOK_SENSITIVITY)
@@ -91,11 +135,27 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 		_update_footsteps(0.0, false)
 		return
+	# Remote bodies (online humans and online bots) follow server snapshots.
+	# Interpolate their position over the snapshot interval so they glide
+	# instead of teleporting every ~50 ms.
+	if _interp_armed and not is_local:
+		_drive_remote_interp()
+		_update_footsteps(_remote_planar_speed, false)
+		return
 	if bot:
 		_apply_bot_movement(delta)
 		return
 	if not is_local:
-		_update_footsteps(velocity.length(), false)
+		# Remote body without a snapshot yet (joined this frame). Hold still.
+		_update_footsteps(0.0, false)
+		return
+	# Online local player: arena.gd's reconciler owns the X/Z position via the
+	# shared movement step. Run move_and_slide with zero velocity so the body
+	# settles under gravity but doesn't double-walk on the input axes.
+	if predicted_externally:
+		velocity = Vector3.ZERO
+		move_and_slide()
+		_update_footsteps(_external_planar_speed, _external_sprinting)
 		return
 	# The in-game menu releases the mouse cursor when open. Use that as the
 	# signal that the local player should not be reading input. The world
@@ -141,6 +201,10 @@ func _apply_bot_movement(delta: float) -> void:
 		sprint_energy += SPRINT_REGEN_PER_S * delta
 	_update_footsteps(Vector2(velocity.x, velocity.z).length(), sprinting)
 
+func set_external_motion(planar_speed: float, sprinting: bool) -> void:
+	_external_planar_speed = planar_speed
+	_external_sprinting = sprinting
+
 func _update_footsteps(planar_speed: float, sprinting: bool) -> void:
 	if footstep_player == null:
 		return
@@ -157,10 +221,67 @@ func _update_footsteps(planar_speed: float, sprinting: bool) -> void:
 		footstep_player.pitch_scale = clampf(planar_speed / WALK_SPEED, 1.2, 1.6)
 
 func apply_remote_state(pos: Vector3, yaw: float, is_frozen: bool, sprint: float) -> void:
-	global_position = pos
-	rotation.y = yaw
+	# Derive an effective planar speed from the delta between snapshots so the
+	# footstep audio has something to drive its volume curve. The first call
+	# initialises the trackers without producing a phantom speed value.
+	var now_s: float = Time.get_unix_time_from_system()
+	if _last_remote_time_s > 0.0:
+		var dt: float = now_s - _last_remote_time_s
+		if dt > 1e-3:
+			var planar: Vector2 = Vector2(pos.x - _last_remote_position.x, pos.z - _last_remote_position.z)
+			# Lerp toward the new sample to ride out the per-snapshot jitter
+			# without lagging significantly behind real movement.
+			var sample: float = planar.length() / dt
+			_remote_planar_speed = lerpf(_remote_planar_speed, sample, 0.5)
+			# Record the actual snapshot interval; interpolation rides over
+			# this duration so it matches the server's true tick rate. Floor
+			# at 0.01 so the 60 Hz server tick (~16.7 ms) lands inside the
+			# clamp window instead of being widened.
+			_interp_dt_s = clampf(dt, 0.01, 0.2)
+	_last_remote_position = pos
+	_last_remote_time_s = now_s
+	# Hand off interpolation: the previous target becomes the new start, the
+	# new sample becomes the new target. On the very first snapshot snap the
+	# body straight to pos so we don't lerp from origin.
+	if _interp_armed:
+		_interp_prev_position = _interp_target_position
+		_interp_prev_yaw = _interp_target_yaw
+	else:
+		_interp_prev_position = pos
+		_interp_prev_yaw = yaw
+		global_position = pos
+		rotation.y = yaw
+		_interp_armed = true
+	_interp_target_position = pos
+	_interp_target_yaw = yaw
+	_interp_start_time_s = now_s
 	frozen = is_frozen
 	sprint_energy = sprint
+	# Don't call settle_into_world here anymore: the body is no longer being
+	# slammed to pos every snapshot. _physics_process slides it through the
+	# interpolated positions and handles depenetration as part of move_and_slide.
+
+# CharacterBody3D does not auto-resolve overlaps when global_position is set
+# directly (spawn, topology wrap, apply_remote_state). Running move_and_slide
+# with zero velocity invokes the physics solver's recovery pass, which pushes
+# the body out of any wall it ended up inside. Cheap enough to call after
+# every direct write.
+func settle_into_world() -> void:
+	var prior := velocity
+	velocity = Vector3.ZERO
+	move_and_slide()
+	velocity = prior
+
+# Slide remote bodies from _interp_prev_position toward _interp_target_position
+# at a rate proportional to the snapshot interval. Run every physics frame for
+# any remote body; the alpha is clamped so the body sits at the latest target
+# if the next snapshot is late.
+func _drive_remote_interp() -> void:
+	var now_s: float = Time.get_unix_time_from_system()
+	var elapsed: float = now_s - _interp_start_time_s
+	var alpha: float = 1.0 if _interp_dt_s <= 0.0 else clampf(elapsed / _interp_dt_s, 0.0, 1.0)
+	global_position = _interp_prev_position.lerp(_interp_target_position, alpha)
+	rotation.y = lerp_angle(_interp_prev_yaw, _interp_target_yaw, alpha)
 
 func _update_marker() -> void:
 	# Local player should not see their own marker even while frozen.

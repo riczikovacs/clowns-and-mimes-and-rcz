@@ -8,9 +8,16 @@
 
 import type { Topology } from './protocol.ts';
 import { WORLD_WIDTH } from './topology.ts';
+import { generateGridMazeWalls } from './gridMaze.ts';
 
 export const WALL_THICKNESS = 0.4;
 export const WALL_HALF_THICKNESS = WALL_THICKNESS / 2;
+// Bots and players are 0.4-radius capsules. Their visual mesh overlaps a wall
+// whenever the body center is closer than (player_radius + wall_half_thickness)
+// to the wall centerline. The collision test below uses this combined margin
+// so bots cannot end up visually intersecting a wall by hugging it.
+export const PLAYER_RADIUS = 0.4;
+export const WALL_CLEARANCE = WALL_HALF_THICKNESS + PLAYER_RADIUS;
 export const SYMMETRY_ORDER = 12;
 export const RING_RADII: readonly number[] = [6, 12, 18, 24, 30, 36];
 
@@ -59,8 +66,32 @@ function chooseGapIndices(seed: number, ringIndex: number): Set<number> {
  * Wall centerline endpoints. The visual mesh adds height (Y) and thickness
  * (perpendicular to length); for server-side collision we treat each wall as
  * a thick line segment.
+ *
+ * Every topology now flows through the grid maze:
+ *   - Plane: closed rectangle with boundary walls.
+ *   - Torus and Klein: boundary walls skipped because the wrap folds both
+ *     edges to the same line.
+ *   - Sphere: six independent 4x6 face mazes packed 3x2 in the playfield;
+ *     face boundaries are open so the topology wraps the player to the
+ *     adjacent face.
+ *
+ * The concentric-ring layout is no longer dispatched anywhere but is kept in
+ * the module (chooseGapIndices, RING_RADII, gapJitter) so a future variant
+ * topology can opt back into it without re-deriving the geometry.
+ *
+ * The default-undefined topology argument keeps the old single-arg signature
+ * working for legacy callers that didn't pass topology.
  */
-export function generateWalls(seed: number): WallSegment[] {
+export function generateWalls(seed: number, topology: Topology = 'plane'): WallSegment[] {
+  return generateGridMazeWalls(seed, topology);
+}
+
+/**
+ * Concentric-ring wall layout. No topology dispatches to this any more; it is
+ * retained so an experimental lobby mode can opt back in without re-deriving
+ * the geometry.
+ */
+export function generateRingWalls(seed: number): WallSegment[] {
   const out: WallSegment[] = [];
   const subdivisions = 4;
   for (let ringIndex = 0; ringIndex < RING_RADII.length; ringIndex += 1) {
@@ -112,10 +143,13 @@ export function pathCrossesWall(
     if (segmentsIntersect(ax, az, bx, bz, w.ax, w.az, w.bx, w.bz)) {
       return true;
     }
-    // Catch grazing near-misses inside the wall's thickness band.
+    // Treat a wall as blocked if the move starts or ends within the body
+    // radius plus the wall's own half-thickness. Without the body radius the
+    // wall check would only stop a bot whose center was inside the wall mesh
+    // - by then the visual capsule already overlaps the wall on screen.
     if (
-      pointToSegmentDistance(ax, az, w) < WALL_HALF_THICKNESS ||
-      pointToSegmentDistance(bx, bz, w) < WALL_HALF_THICKNESS
+      pointToSegmentDistance(ax, az, w) < WALL_CLEARANCE ||
+      pointToSegmentDistance(bx, bz, w) < WALL_CLEARANCE
     ) {
       return true;
     }

@@ -1,10 +1,22 @@
 extends Node3D
 
-## Symmetric labyrinth with concentric ring regions. Walls are deterministic
-## given a seed, alternate connector orientation between rings, are solid
-## colliders, and feed a topology-aware AStar2D graph for bot pathfinding.
+## Labyrinth. Every topology now drives the grid maze (mirrors
+## backend/shared/src/gridMaze.ts):
+##   * Plane: closed rectangle with boundary walls.
+##   * Torus and Klein: wrap seams have no walls so the topology folds both
+##     edges to the same line.
+##   * Sphere: six independent 4x6 face mazes packed 3x2 in the playfield;
+##     face boundaries are open so the topology wraps a player crossing an
+##     edge onto the adjacent face.
+##
+## The ring layout (_build_ring, _add_arc_wall) is no longer dispatched but is
+## kept for an experimental lobby mode that may opt back in.
+##
+## Walls are deterministic given a seed and feed a topology-aware AStar2D graph
+## for bot pathfinding.
 
 const TopologyScript := preload("res://scripts/topology/topology.gd")
+const GridMaze := preload("res://scripts/grid_maze.gd")
 
 const WALL_HEIGHT := 6.0
 const WALL_THICKNESS := 0.4
@@ -20,23 +32,63 @@ var seed_value: int = 0
 var topology: TopologyScript
 var pathfinder: AStar2D
 var solid_cells: Dictionary = {}
+# Per-axis cell counts for the pathfinding grid. Set from the topology's
+# playfield extents in build(); klein's double cover makes the x axis twice
+# as wide as the z axis. Everything else stays square.
+var _grid_cols: int = GRID_RES
+var _grid_rows: int = GRID_RES
 
 var walls_root: Node3D
 var floor_node: MeshInstance3D
 var _wall_segments: Array = []  # [{transform, length}, ...]
+# Raw wall endpoint pairs in world XZ coords, parallel to _wall_segments.
+# The local-player predictor reads this to mirror the server's pathCrossesWall
+# check; the server uses the same {ax,az,bx,bz} representation, so wall
+# collision matches on both sides during reconciliation replay.
+var _wall_endpoints: Array = []  # [{ax, az, bx, bz}, ...]
 
 func build(rng_seed: int, top: TopologyScript) -> void:
 	seed_value = rng_seed
 	topology = top
+	# Match the AStar grid resolution to the topology's playfield extents so
+	# klein's double cover gets 2*GRID_RES columns (160) and stays square
+	# elsewhere.
+	_grid_cols = int(round(topology.extent_x() / CELL_SIZE))
+	_grid_rows = int(round(topology.extent_z() / CELL_SIZE))
 	_resolve_children()
 	_ensure_floor()
 	_clear_walls()
 	_wall_segments.clear()
-	var rng := RandomNumberGenerator.new()
-	rng.seed = rng_seed
-	for ring_index in RING_RADII.size():
-		_build_ring(ring_index, rng)
+	_wall_endpoints.clear()
+	var topo_name: String = topology.name()
+	_build_grid_maze(rng_seed, topo_name)
 	_build_pathfinder()
+	_build_wrap_tiles()
+
+func _build_grid_maze(rng_seed: int, topo_name: String) -> void:
+	# Each maze segment is a thin straight wall between two grid cells. The
+	# rest of the labyrinth code already treats walls as oriented boxes, so we
+	# translate each {ax,az,bx,bz} into the same transform shape _add_arc_wall
+	# would produce.
+	for seg in GridMaze.generate(rng_seed, topo_name):
+		var ax: float = float(seg["ax"])
+		var az: float = float(seg["az"])
+		var bx: float = float(seg["bx"])
+		var bz: float = float(seg["bz"])
+		var mid := Vector3((ax + bx) * 0.5, WALL_HEIGHT / 2.0, (az + bz) * 0.5)
+		var dx: float = bx - ax
+		var dz: float = bz - az
+		var seg_length: float = sqrt(dx * dx + dz * dz)
+		var yaw: float = atan2(dz, dx)
+		var wall: StaticBody3D = _make_wall(seg_length)
+		wall.position = mid
+		wall.rotation = Vector3(0.0, -yaw, 0.0)
+		walls_root.add_child(wall)
+		_wall_segments.append({"transform": wall.transform, "length": seg_length})
+		_wall_endpoints.append({"ax": ax, "az": az, "bx": bx, "bz": bz})
+
+func wall_endpoints() -> Array:
+	return _wall_endpoints
 
 func find_path(from: Vector3, to: Vector3) -> Array[Vector3]:
 	if pathfinder == null:
@@ -57,6 +109,60 @@ func find_path(from: Vector3, to: Vector3) -> Array[Vector3]:
 # Construction
 # ---------------------------------------------------------------------------
 
+## Clones the floor and walls into the 8 neighbouring tiles offset by the
+## topology's playfield extents so a player at the seam looks across and sees
+## the wrapped portion of the map instead of an opaque edge. The clones are
+## visual only - no collision - because the topology.wrap teleport in
+## arena.gd keeps the body inside the canonical domain.
+##
+## Klein is now a true double cover (the right half of the maze is the
+## z-mirror of the left), so wrap tiles for Klein just translate by the
+## playfield extents and never apply an extra z-flip - the flip is baked
+## into the maze geometry itself.
+func _build_wrap_tiles() -> void:
+	var prior_tiles: Node = get_node_or_null("WrapTiles")
+	if prior_tiles != null:
+		prior_tiles.queue_free()
+	if topology == null:
+		return
+	var topo_name: String = topology.name()
+	# Plane has a hard boundary and no wrap; everything else gets clones so
+	# the playfield does not end at a void at the seam. Sphere's 3x2 cube
+	# packing technically needs rotated-edge adjacency rather than a flat
+	# ±WIDTH lattice, but the rest of the sphere code (topologyDistance,
+	# wrapPosition, gridMaze) already uses the same torus-style modular
+	# approximation, so cloning by ±WIDTH stays consistent until a strict
+	# cube net lands.
+	if topo_name == "plane":
+		return
+	var tiles_root := Node3D.new()
+	tiles_root.name = "WrapTiles"
+	add_child(tiles_root)
+	var ext_x: float = topology.extent_x()
+	var ext_z: float = topology.extent_z()
+	for dx in [-1, 0, 1]:
+		for dz in [-1, 0, 1]:
+			if dx == 0 and dz == 0:
+				continue
+			var tile := Node3D.new()
+			tile.position = Vector3(float(dx) * ext_x, 0.0, float(dz) * ext_z)
+			tiles_root.add_child(tile)
+			var floor_clone := MeshInstance3D.new()
+			floor_clone.mesh = floor_node.mesh
+			floor_clone.material_override = floor_node.material_override
+			tile.add_child(floor_clone)
+			for seg in _wall_segments:
+				var wall_mesh := MeshInstance3D.new()
+				var box := BoxMesh.new()
+				box.size = Vector3(float(seg["length"]), WALL_HEIGHT, WALL_THICKNESS)
+				wall_mesh.mesh = box
+				wall_mesh.transform = seg["transform"]
+				var mat := StandardMaterial3D.new()
+				mat.albedo_color = Color(0.18, 0.18, 0.22)
+				mat.roughness = 0.85
+				wall_mesh.material_override = mat
+				tile.add_child(wall_mesh)
+
 func _resolve_children() -> void:
 	walls_root = get_node_or_null("Walls") as Node3D
 	if walls_root == null:
@@ -71,7 +177,11 @@ func _resolve_children() -> void:
 
 func _ensure_floor() -> void:
 	var plane := PlaneMesh.new()
-	plane.size = Vector2(TopologyScript.WIDTH, TopologyScript.WIDTH)
+	# Klein's playfield is the double cover: 2*WIDTH along x, WIDTH along z.
+	# Every other topology stays square.
+	var ext_x: float = topology.extent_x() if topology != null else TopologyScript.WIDTH
+	var ext_z: float = topology.extent_z() if topology != null else TopologyScript.WIDTH
+	plane.size = Vector2(ext_x, ext_z)
 	floor_node.mesh = plane
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.09, 0.09, 0.11)
@@ -163,8 +273,8 @@ func _make_wall(seg_length: float) -> StaticBody3D:
 func _build_pathfinder() -> void:
 	pathfinder = AStar2D.new()
 	solid_cells.clear()
-	for cy in range(GRID_RES):
-		for cx in range(GRID_RES):
+	for cy in range(_grid_rows):
+		for cx in range(_grid_cols):
 			pathfinder.add_point(_cell_id(Vector2i(cx, cy)), Vector2(cx, cy))
 	for segment in _wall_segments:
 		_mark_wall_solid(segment["transform"], segment["length"])
@@ -174,8 +284,8 @@ func _connect_neighbors() -> void:
 	var wrap_x: bool = topology != null and topology.wraps_x()
 	var wrap_z: bool = topology != null and topology.wraps_z()
 	var flip_z: bool = topology != null and topology.flips_z_on_x_wrap()
-	for cy in range(GRID_RES):
-		for cx in range(GRID_RES):
+	for cy in range(_grid_rows):
+		for cx in range(_grid_cols):
 			var from_cell := Vector2i(cx, cy)
 			if _is_solid(from_cell):
 				continue
@@ -200,23 +310,23 @@ func _wrap_cell(cell: Vector2i, wrap_x: bool, wrap_z: bool, flip_z: bool) -> Vec
 	if cx < 0:
 		if not wrap_x:
 			return Vector2i(-1, -1)
-		cx += GRID_RES
+		cx += _grid_cols
 		x_crossed = true
-	elif cx >= GRID_RES:
+	elif cx >= _grid_cols:
 		if not wrap_x:
 			return Vector2i(-1, -1)
-		cx -= GRID_RES
+		cx -= _grid_cols
 		x_crossed = true
 	if cy < 0:
 		if not wrap_z:
 			return Vector2i(-1, -1)
-		cy += GRID_RES
-	elif cy >= GRID_RES:
+		cy += _grid_rows
+	elif cy >= _grid_rows:
 		if not wrap_z:
 			return Vector2i(-1, -1)
-		cy -= GRID_RES
+		cy -= _grid_rows
 	if x_crossed and flip_z:
-		cy = GRID_RES - 1 - cy
+		cy = _grid_rows - 1 - cy
 	return Vector2i(cx, cy)
 
 func _mark_wall_solid(wall_xform: Transform3D, seg_length: float) -> void:
@@ -243,23 +353,25 @@ func _mark_wall_solid(wall_xform: Transform3D, seg_length: float) -> void:
 				solid_cells[_cell_id(cell)] = true
 
 func _is_solid(cell: Vector2i) -> bool:
-	if cell.x < 0 or cell.x >= GRID_RES or cell.y < 0 or cell.y >= GRID_RES:
+	if cell.x < 0 or cell.x >= _grid_cols or cell.y < 0 or cell.y >= _grid_rows:
 		return true
 	return solid_cells.has(_cell_id(cell))
 
 func _cell_id(cell: Vector2i) -> int:
-	return cell.y * GRID_RES + cell.x
+	return cell.y * _grid_cols + cell.x
 
 func _world_to_cell(p: Vector3) -> Vector2i:
-	var half: float = TopologyScript.WIDTH * 0.5
-	var x: int = int(round((p.x + half) / CELL_SIZE))
-	var y: int = int(round((p.z + half) / CELL_SIZE))
-	return Vector2i(clamp(x, 0, GRID_RES - 1), clamp(y, 0, GRID_RES - 1))
+	var half_x: float = float(_grid_cols) * CELL_SIZE * 0.5
+	var half_z: float = float(_grid_rows) * CELL_SIZE * 0.5
+	var x: int = int(round((p.x + half_x) / CELL_SIZE))
+	var y: int = int(round((p.z + half_z) / CELL_SIZE))
+	return Vector2i(clamp(x, 0, _grid_cols - 1), clamp(y, 0, _grid_rows - 1))
 
 func _cell_to_world(cell: Vector2i) -> Vector3:
-	var half: float = TopologyScript.WIDTH * 0.5
-	var x: float = float(cell.x) * CELL_SIZE - half + CELL_SIZE * 0.5
-	var z: float = float(cell.y) * CELL_SIZE - half + CELL_SIZE * 0.5
+	var half_x: float = float(_grid_cols) * CELL_SIZE * 0.5
+	var half_z: float = float(_grid_rows) * CELL_SIZE * 0.5
+	var x: float = float(cell.x) * CELL_SIZE - half_x + CELL_SIZE * 0.5
+	var z: float = float(cell.y) * CELL_SIZE - half_z + CELL_SIZE * 0.5
 	return Vector3(x, 0.0, z)
 
 func _nearest_open_cell(cell: Vector2i) -> Vector2i:
@@ -267,7 +379,7 @@ func _nearest_open_cell(cell: Vector2i) -> Vector2i:
 		for dx in range(-radius, radius + 1):
 			for dy in range(-radius, radius + 1):
 				var c := Vector2i(cell.x + dx, cell.y + dy)
-				if c.x < 0 or c.x >= GRID_RES or c.y < 0 or c.y >= GRID_RES:
+				if c.x < 0 or c.x >= _grid_cols or c.y < 0 or c.y >= _grid_rows:
 					continue
 				if not _is_solid(c):
 					return c

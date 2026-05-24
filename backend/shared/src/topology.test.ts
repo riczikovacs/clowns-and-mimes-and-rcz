@@ -14,21 +14,34 @@ describe('wrapPosition', () => {
     expect(wrapPosition({ x: 0, z: -60 }, 'torus', W)).toEqual({ x: 0, z: 40 });
   });
 
-  it('flips z when wrapping x on klein bottle', () => {
+  it('wraps with period 2W in x on klein bottle (double cover)', () => {
+    // x stays in [-W, W] (period 2W); the z-mirror of the right half is in
+    // the geometry, not in wrap. Position 60 with W=100 is inside the
+    // double cover and is not wrapped.
     const a = wrapPosition({ x: 60, z: 20 }, 'klein', W);
-    expect(a.x).toBe(-40);
-    expect(a.z).toBe(-20);
+    expect(a.x).toBe(60);
+    expect(a.z).toBe(20);
+    // Past the 2W seam at x=100, wrap pulls back across the full double
+    // cover (200 wide) without touching z.
+    const b = wrapPosition({ x: 110, z: 20 }, 'klein', W);
+    expect(b.x).toBe(-90);
+    expect(b.z).toBe(20);
   });
 
-  it('does not flip z when only wrapping z on klein bottle', () => {
+  it('wraps z with period W on klein bottle', () => {
     const a = wrapPosition({ x: 0, z: 60 }, 'klein', W);
     expect(a.x).toBe(0);
     expect(a.z).toBe(-40);
   });
 
-  it('reflects outside the disk on sphere', () => {
+  it('wraps both axes torus-like on sphere (cube-mapped first cut)', () => {
+    // First cut packs six cube faces 3x2 across the full WIDTH. A simple
+    // modular wrap matches the visual seam crossings; proper cube edge
+    // rotations are a follow-up.
     const a = wrapPosition({ x: 60, z: 0 }, 'sphere', W);
-    expect(a.x).toBeLessThan(50);
+    expect(a.x).toBeCloseTo(-40, 6);
+    const b = wrapPosition({ x: 0, z: -60 }, 'sphere', W);
+    expect(b.z).toBeCloseTo(40, 6);
   });
 });
 
