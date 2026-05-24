@@ -5,7 +5,7 @@ extends Node
 ## the production worker. Override at runtime by exporting CLOWNS_MM_URL before
 ## launching the game (handy for the dev environment or a local wrangler).
 
-const DEFAULT_MATCHMAKER := "https://cm-matchmaker.workers.dev"
+const DEFAULT_MATCHMAKER := "https://cm-matchmaker.seanreid.workers.dev"
 const ENV_VAR := "CLOWNS_MM_URL"
 const SETTING_KEY := "application/config/matchmaker_url"
 
