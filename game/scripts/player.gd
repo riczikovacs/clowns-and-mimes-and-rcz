@@ -84,9 +84,6 @@ func _input(event: InputEvent) -> void:
 		rotate_y(-event.relative.x * LOOK_SENSITIVITY)
 		camera.rotate_x(-event.relative.y * LOOK_SENSITIVITY)
 		camera.rotation.x = clampf(camera.rotation.x, -1.2, 1.2)
-	elif event.is_action_pressed("ui_pause"):
-		var mode := Input.MOUSE_MODE_VISIBLE if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED else Input.MOUSE_MODE_CAPTURED
-		Input.set_mouse_mode(mode)
 
 func _physics_process(delta: float) -> void:
 	if frozen:
@@ -99,6 +96,14 @@ func _physics_process(delta: float) -> void:
 		return
 	if not is_local:
 		_update_footsteps(velocity.length(), false)
+		return
+	# The in-game menu releases the mouse cursor when open. Use that as the
+	# signal that the local player should not be reading input. The world
+	# keeps running, but the character stands still.
+	if Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
+		velocity = Vector3.ZERO
+		move_and_slide()
+		_update_footsteps(0.0, false)
 		return
 	var input_dir := Vector3.ZERO
 	input_dir.z -= Input.get_action_strength("move_forward")

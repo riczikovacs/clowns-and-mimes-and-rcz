@@ -31,6 +31,7 @@ No build steps are required. Download, install, launch.
 | Look           | Mouse                                          |
 | Sprint         | Hold Shift                                     |
 | Tag / unfreeze | Run into the other player (no button required) |
+| Menu           | Esc (world keeps running)                      |
 
 ## Repository layout
 

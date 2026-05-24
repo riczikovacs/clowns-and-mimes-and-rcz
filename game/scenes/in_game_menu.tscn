@@ -1,0 +1,70 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/in_game_menu.gd" id="1_im"]
+
+[sub_resource type="StyleBoxFlat" id="panel_style"]
+bg_color = Color(1, 0.96, 0.84, 1)
+border_color = Color(0.047, 0.047, 0.055, 1)
+border_width_left = 4
+border_width_top = 4
+border_width_right = 4
+border_width_bottom = 4
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+shadow_color = Color(0.78, 0.063, 0.18, 1)
+shadow_size = 0
+shadow_offset = Vector2(10, 10)
+
+[sub_resource type="StyleBoxFlat" id="dim_style"]
+bg_color = Color(0.047, 0.039, 0.078, 0.55)
+
+[node name="InGameMenu" type="CanvasLayer"]
+layer = 10
+script = ExtResource("1_im")
+
+[node name="Dim" type="PanelContainer" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme_override_styles/panel = SubResource("dim_style")
+mouse_filter = 1
+
+[node name="Panel" type="PanelContainer" parent="."]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -200.0
+offset_top = -150.0
+offset_right = 200.0
+offset_bottom = 150.0
+theme_override_styles/panel = SubResource("panel_style")
+
+[node name="Content" type="VBoxContainer" parent="Panel"]
+custom_minimum_size = Vector2(360, 0)
+theme_override_constants/separation = 14
+
+[node name="Title" type="Label" parent="Panel/Content"]
+horizontal_alignment = 1
+text = "Menu"
+theme_override_font_sizes/font_size = 40
+theme_override_colors/font_color = Color(0.78, 0.063, 0.18, 1)
+
+[node name="Hint" type="Label" parent="Panel/Content"]
+horizontal_alignment = 1
+autowrap_mode = 2
+text = "The match keeps playing. Esc to resume."
+theme_override_font_sizes/font_size = 16
+theme_override_colors/font_color = Color(0.18, 0.16, 0.18, 1)
+
+[node name="Buttons" type="VBoxContainer" parent="Panel/Content"]
+theme_override_constants/separation = 10
+
+[node name="Resume" type="Button" parent="Panel/Content/Buttons"]
+custom_minimum_size = Vector2(0, 44)
+text = "Resume"
+
+[node name="Quit" type="Button" parent="Panel/Content/Buttons"]
+custom_minimum_size = Vector2(0, 44)
+text = "Quit to main menu"
