@@ -12,6 +12,15 @@ func wrap(position: Vector3) -> Vector3:
 func distance(a: Vector3, b: Vector3) -> float:
 	return Vector2(_wrapped_delta(a.x, b.x), _wrapped_delta(a.z, b.z)).length()
 
+func delta(from: Vector3, to: Vector3) -> Vector3:
+	return Vector3(_wrapped_delta(from.x, to.x), 0.0, _wrapped_delta(from.z, to.z))
+
+func wraps_x() -> bool:
+	return true
+
+func wraps_z() -> bool:
+	return true
+
 func _wrap_axis(value: float) -> float:
 	var h := half()
 	var w := fposmod(value + h, WIDTH)
