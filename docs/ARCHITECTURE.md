@@ -183,16 +183,20 @@ The labyrinth is deterministic given the seed so server and clients agree on geo
 
 ## Audio system
 
-Three audio buses: Music, SFX, UI.
+Three audio buses configured at runtime: Music, SFX, UI.
 
-- Title screen plays a short oompa loop on the Music bus.
-- Lobby transition fades music with a reverb tail and crossfade into ambience.
-- During gameplay only footsteps and freeze/unfreeze stingers play.
-- Footstep emitters are attached to every player. Own steps play at fixed volume. Remote steps attenuate by distance with an audible falloff at about 8 meters.
-- Footstep tempo follows current speed via a one-shot timer pool.
-- Win plays a maniacal laugh. Loss plays the womp-womp stinger.
+- Title screen plays the oompa main menu loop on the Music bus.
+- During gameplay each player has an `AudioStreamPlayer3D` footstep emitter on the SFX bus. The pitch scales with current planar speed (silent below a threshold, ~1.0 for walking, up to ~1.6 for sprinting). Remote players use 3D attenuation so distant steps fade with distance.
+- Win plays a maniacal laugh on SFX. Loss plays the womp-womp stinger.
+- The arena dims the Music bus once the match ends so the stinger reads cleanly.
+- `AssetPaths` is a thin loader that returns null when an asset file is absent, so the game runs without art and sound during development.
 
 ## Bot AI
+
+Two implementations, one shape:
+
+- **Client-side BotAI (offline play).** Attached to each bot Player as a `BotAI` node. State machine runs at 5 Hz. Path is recomputed each decision tick via `Labyrinth.find_path` (AStarGrid2D on the labyrinth's 80x80 grid). The bot aims at the next waypoint instead of straight at the target, falling back to direct steering when no path is found. The 4 states are Patrol, Chase, Flee, Rescue.
+- **Server-side bot AI (stranger rooms).** Lives in the room Durable Object's `simulate` loop. When the first human joins a fresh room, a 3 second bot-fill timer schedules `fillBots` plus `startCountdown`. The tick then drives chase/flee/patrol decisions using the same shared rules state, calls `canTag` on contact, and broadcasts `tagged` events identical to the human path.
 
 ```mermaid
 stateDiagram-v2
@@ -205,10 +209,9 @@ stateDiagram-v2
   Rescue --> Patrol: teammate unfrozen or unreachable
 ```
 
-- Steering: targets are picked from the shared rules state and the bot walks straight toward them. A stuck detector re-picks the target when no progress is made for one second. A\* pathfinding around walls is tracked as a follow-up.
 - Visibility: scalar distance threshold against the topology-aware `distance` function. No raycast cone yet.
-- Decision tick: 5 Hz to keep CPU low even with many bots.
-- Bots are scheduled by the server in stranger lobbies and locally by the host in private bot-fill mode.
+- Topology-aware A\* across the torus and Klein seam is tracked as a follow-up: currently the grid is flat and the bot walks the long way around when it should cross a seam.
+- Server-side bots ignore wall geometry (the labyrinth is generated client-side from a seed). Porting the wall generator to TS so the room can run authoritative collision is tracked as a follow-up.
 
 ## Networking
 
@@ -228,25 +231,23 @@ sequenceDiagram
   DO-->>C: tag_result {ok, reason}
 ```
 
-Wire protocol is CBOR for compactness with a versioned envelope:
+Wire protocol is JSON over WebSocket with a `t` discriminator field on every message, and `PROTOCOL_VERSION = 1` (defined in `@cm/shared/protocol`). The room rejects mismatched versions with a `version_mismatch` error and closes the socket.
 
-```
-Envelope {
-  v: uint8
-  t: msgType
-  p: payload
-}
-```
-
-Message types: `join`, `leave`, `input`, `state_snapshot`, `state_delta`, `tag_attempt`, `tag_result`, `unfreeze_attempt`, `unfreeze_result`, `event`, `ping`, `pong`.
+Message types: `join`, `leave`, `input`, `snapshot`, `delta`, `event`, `tag_attempt`, `tag_result`, `unfreeze_attempt`, `unfreeze_result`, `ping`, `pong`, `error`.
 
 Reconciliation:
 
-- Client stores last N inputs.
-- Server returns `state_delta` containing authoritative position for the local player plus last acked input seq.
-- Client re-simulates from acked seq forward and snaps blend.
+- Client streams inputs at 20 Hz with a monotonically increasing seq.
+- Server's `delta` returns an `ackSeq` plus authoritative player states.
+- Today the client snaps remote player positions and keeps the local player's predicted position; full re-simulation from the last acked input is a follow-up.
 
 Interest management is light. Rooms cap at 16 players, the full state fits in a small packet.
+
+Client modules:
+
+- `ServerConfig` reads `CLOWNS_MM_URL` from the OS environment first, then a project setting, then falls back to the production matchmaker.
+- `MatchmakerClient` issues the three HTTP calls (create private, join code, open join) and emits signals with the parsed responses.
+- `RoomClient` owns the WebSocket lifecycle, sends `join`/`input`/`tag_attempt`/`unfreeze_attempt`/`ping`, and emits parsed `snapshot`/`delta`/`event`/`error` signals. Arena consumes those when `GameState.server_url` is set; otherwise the offline rules engine drives the match.
 
 ## Backend services
 
@@ -261,12 +262,13 @@ flowchart LR
 ```
 
 - `matchmaker` Worker exposes:
-  - `POST /lobby` to create a private room and return a code.
-  - `POST /lobby/{code}/join` to fetch a WebSocket URL into the room.
-  - `POST /open/join` to be placed in or create an open room with the next available topology.
+  - `POST /lobby` creates a private room and returns `{code, roomId, wsUrl}`. The code is written to KV with a 6 hour TTL.
+  - `POST /lobby/{code}/join` reads the KV entry and returns `{roomId, wsUrl}`.
+  - `POST /open/join` lists open-room entries by prefix, picks the most populated one under the soft capacity (12), increments its joined counter, and returns its `wsUrl`. Falls back to spinning up a fresh open room with a random topology when no candidate exists.
   - `GET /healthz` for uptime checks.
-- `room` Durable Object holds room state, broadcasts deltas, and drives the tick loop. Uses the WebSocket hibernation API to stay cheap when idle.
-- `shared` provides protocol types compiled to both Workers and a small JSON schema bundled with the game client.
+- `wsUrl` is composed as `wss://<room-worker-name>.<account-subdomain>.workers.dev/ws/{roomId}` where `<account-subdomain>` is the account's `*.workers.dev` slug, provided to the matchmaker as the `WORKERS_SUBDOMAIN` env var.
+- `room` Durable Object holds room state, broadcasts deltas, drives the 20 Hz tick loop, and runs server-side bot AI in stranger rooms. Uses the WebSocket hibernation API to stay cheap when idle.
+- `shared` provides protocol types and topology helpers compiled into both Workers via subpath exports (`@cm/shared`, `@cm/shared/topology`).
 
 ## Matchmaking
 
@@ -291,7 +293,7 @@ flowchart TD
   Start10 --> Free[60s free roam]
 ```
 
-Open rooms target a fill of 8 humans plus bots up to 16 total. If a room is not full after a fairness timer, it starts with bots filling the remaining seats.
+Open rooms target a soft capacity of 12 humans before opening a fresh room. Once a human joins, the room schedules a 3 second bot-fill timer; when it fires the room fills empty seats up to 4 bots per team and starts the 10 second countdown, so a solo player never sits in an empty lobby.
 
 ## Room lifecycle
 
@@ -366,18 +368,21 @@ Release on a `v*` tag:
 
 ## Environments
 
-| Environment | Branch | Backend                         | Frontend                   |
-| ----------- | ------ | ------------------------------- | -------------------------- |
-| dev         | `dev`  | `cm-matchmaker-dev.workers.dev` | preview deploy on every PR |
-| production  | `main` | `cm-matchmaker.workers.dev`     | GitHub Pages               |
+| Environment | Branch | Backend                                  | Frontend                   |
+| ----------- | ------ | ---------------------------------------- | -------------------------- |
+| dev         | `dev`  | `cm-matchmaker-dev.seanreid.workers.dev` | preview deploy on every PR |
+| production  | `main` | `cm-matchmaker.seanreid.workers.dev`     | GitHub Pages               |
 
 Each environment has its own KV namespace and Durable Object class binding to keep state isolated. Per-PR preview deploys cover the pre-prod sanity check role a staging branch used to handle.
 
 ## Observability
 
 - Cloudflare Workers Logs for backend events and errors.
-- Sentry for the game client and website (free tier).
 - Lightweight structured logs from the room over `console.log` with a JSON shape so they parse cleanly in Workers Logs.
+- `tests/smoke` is a single-file TS script that hits a deployed matchmaker end-to-end (healthz, create lobby, join by code, websocket snapshot). Run via `pnpm --filter @cm/smoke dev` against the dev backend or `pnpm --filter @cm/smoke production` against prod. Useful as a manual deploy verification.
+- `scripts/playtest-dev.sh` launches the Godot editor with `CLOWNS_MM_URL` pointed at the dev workers so a maintainer can play the editor build against the live dev backend instead of offline bots.
+
+No third-party error tracker is wired up. Adding one is a future consideration; current scale does not require it.
 
 ## Budget
 
@@ -387,7 +392,6 @@ Each environment has its own KV namespace and Durable Object class binding to ke
 | Apple Developer Program (for macOS signing and notarization) | USD 99                    |
 | Domain registration (optional, deferrable)                   | USD 15                    |
 | GitHub (public repo, free)                                   | USD 0                     |
-| Sentry (free tier)                                           | USD 0                     |
 | **Total**                                                    | **USD 174** with headroom |
 
 Initial release can ship without code signing on macOS by accepting Gatekeeper warnings. Notarization is a fast-follow.
