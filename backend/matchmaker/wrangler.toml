@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MatchmakerDO"]
+
 [env.dev]
 name = "cm-matchmaker-dev"
 vars = { ROOM_WORKER = "cm-room-dev", WORKERS_SUBDOMAIN = "seanreid", ENV = "dev" }
@@ -10,9 +14,17 @@ kv_namespaces = [
   { binding = "LOBBY_CODES", id = "3138395ad3ec4b4b8fbbf74d8798cb83" },
 ]
 
+[[env.dev.durable_objects.bindings]]
+name = "MATCHMAKER_DO"
+class_name = "MatchmakerDO"
+
 [env.production]
 name = "cm-matchmaker"
 vars = { ROOM_WORKER = "cm-room", WORKERS_SUBDOMAIN = "seanreid", ENV = "production" }
 kv_namespaces = [
   { binding = "LOBBY_CODES", id = "d20f481e8a1749948156a56c08b9a07f" },
 ]
+
+[[env.production.durable_objects.bindings]]
+name = "MATCHMAKER_DO"
+class_name = "MatchmakerDO"

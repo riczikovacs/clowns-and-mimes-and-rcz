@@ -4,6 +4,7 @@ export { Room };
 
 export interface Env {
   ROOM: DurableObjectNamespace;
+  MATCHMAKER_URL?: string;
 }
 
 export default {

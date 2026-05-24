@@ -4,28 +4,21 @@ import type {
   MatchmakeJoinResponse,
   Topology,
 } from '@cm/shared';
+import { MatchmakerDO, VALID_TOPOLOGIES } from './matchmakerDO.ts';
+
+export { MatchmakerDO };
 
 export interface Env {
   LOBBY_CODES: KVNamespace;
+  MATCHMAKER_DO: DurableObjectNamespace;
   ROOM_WORKER: string;
   WORKERS_SUBDOMAIN: string;
   ENV: string;
 }
 
-const VALID_TOPOLOGIES: readonly Topology[] = ['plane', 'torus', 'klein', 'sphere'];
 const CODE_LENGTH = 6;
 const CODE_ALPHABET = 'BCDFGHJKLMNPQRSTVWXYZ23456789';
-const OPEN_ROOM_TTL_S = 60 * 30;
 const PRIVATE_ROOM_TTL_S = 60 * 60 * 6;
-const OPEN_ROOM_PREFIX = 'open:';
-const OPEN_ROOM_SOFT_CAPACITY = 12;
-
-interface OpenRoomEntry {
-  roomId: string;
-  topology: Topology;
-  joined: number;
-  createdAt: number;
-}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -42,6 +35,12 @@ export default {
     }
     if (req.method === 'POST' && url.pathname === '/open/join') {
       return joinOpenRoom(env);
+    }
+    if (req.method === 'POST' && url.pathname === '/lobby/room-state') {
+      return forwardToDO(env, '/roomState', req);
+    }
+    if (req.method === 'POST' && url.pathname === '/lobby/room-detach') {
+      return forwardToDO(env, '/roomDetach', req);
     }
     return notFound();
   },
@@ -84,38 +83,32 @@ async function joinByCode(code: string, env: Env): Promise<Response> {
 }
 
 async function joinOpenRoom(env: Env): Promise<Response> {
-  const reusable = await findReusableOpenRoom(env);
-  if (reusable !== null) {
-    return json<MatchmakeJoinResponse>({
-      roomId: reusable.roomId,
-      wsUrl: wsUrlFor(env, reusable.roomId, reusable.topology),
-    });
+  const doRes = await callDO(env, '/openJoin', { method: 'POST', body: '{}' });
+  if (!doRes.ok) {
+    return error(500, 'matchmaker_unavailable');
   }
-  const topology = VALID_TOPOLOGIES[Math.floor(Math.random() * VALID_TOPOLOGIES.length)]!;
-  const roomId = crypto.randomUUID();
-  const entry: OpenRoomEntry = { roomId, topology, joined: 1, createdAt: Date.now() };
-  await env.LOBBY_CODES.put(`${OPEN_ROOM_PREFIX}${roomId}`, JSON.stringify(entry), {
-    expirationTtl: OPEN_ROOM_TTL_S,
-  });
-  return json<MatchmakeJoinResponse>({ roomId, wsUrl: wsUrlFor(env, roomId, topology) });
+  const parsed = (await doRes.json()) as { roomId: string; topology: Topology };
+  const res: MatchmakeJoinResponse & { topology: Topology } = {
+    roomId: parsed.roomId,
+    wsUrl: wsUrlFor(env, parsed.roomId, parsed.topology),
+    topology: parsed.topology,
+  };
+  return json(res);
 }
 
-async function findReusableOpenRoom(env: Env): Promise<OpenRoomEntry | null> {
-  const list = await env.LOBBY_CODES.list({ prefix: OPEN_ROOM_PREFIX, limit: 50 });
-  let best: OpenRoomEntry | null = null;
-  for (const item of list.keys) {
-    const raw = await env.LOBBY_CODES.get(item.name);
-    if (!raw) continue;
-    const entry = JSON.parse(raw) as OpenRoomEntry;
-    if (entry.joined >= OPEN_ROOM_SOFT_CAPACITY) continue;
-    if (!best || entry.joined > best.joined) best = entry;
-  }
-  if (best === null) return null;
-  best.joined += 1;
-  await env.LOBBY_CODES.put(`${OPEN_ROOM_PREFIX}${best.roomId}`, JSON.stringify(best), {
-    expirationTtl: OPEN_ROOM_TTL_S,
+async function forwardToDO(env: Env, path: string, req: Request): Promise<Response> {
+  const bodyText = await req.text();
+  return callDO(env, path, {
+    method: 'POST',
+    body: bodyText,
+    headers: { 'content-type': 'application/json' },
   });
-  return best;
+}
+
+function callDO(env: Env, path: string, init: RequestInit): Promise<Response> {
+  const id = env.MATCHMAKER_DO.idFromName('v1');
+  const stub = env.MATCHMAKER_DO.get(id);
+  return stub.fetch(`https://matchmaker-do.internal${path}`, init);
 }
 
 async function freshCode(env: Env): Promise<string> {
