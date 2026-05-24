@@ -8,7 +8,9 @@ The latest published release is the only supported version. Older builds are not
 
 If you have discovered a security issue, please do not open a public GitHub issue.
 
-Email the maintainer privately at `seanreid.mail@gmail.com` with:
+Report the issue privately using GitHub's [private vulnerability reporting](https://github.com/sean-reid/clowns-and-mimes/security/advisories/new) feature.
+
+Include in your report:
 
 - A clear description of the issue
 - Steps to reproduce
