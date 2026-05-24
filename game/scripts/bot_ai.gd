@@ -60,7 +60,7 @@ func _physics_process(delta: float) -> void:
 	_drive()
 
 func _update_stuck(delta: float) -> void:
-	var moved := (player.global_position - last_position).length()
+	var moved: float = (player.global_position - last_position).length()
 	if moved < STUCK_SPEED * delta:
 		stuck_clock += delta
 	else:
@@ -70,9 +70,9 @@ func _update_stuck(delta: float) -> void:
 func _choose_state() -> void:
 	var active_team: String = rules.active_team()
 	var enemy_id: String = _nearest_enemy_id()
-	var enemy_dist := _dist_to_id(enemy_id)
+	var enemy_dist: float = _dist_to_id(enemy_id)
 	var frozen_teammate_id: String = _nearest_frozen_teammate_id()
-	var rescue_dist := _dist_to_id(frozen_teammate_id)
+	var rescue_dist: float = _dist_to_id(frozen_teammate_id)
 	if frozen_teammate_id != "" and rescue_dist < RESCUE_RADIUS and active_team != _opposing_team():
 		state = State.RESCUE
 	elif enemy_id != "" and enemy_dist < VISION_RADIUS:
@@ -83,11 +83,11 @@ func _choose_state() -> void:
 func _choose_target() -> void:
 	match state:
 		State.CHASE:
-			var id := _nearest_enemy_id()
-			patrol_target = _position_of(id)
+			var enemy_id: String = _nearest_enemy_id()
+			patrol_target = _position_of(enemy_id)
 		State.FLEE:
-			var id := _nearest_enemy_id()
-			var threat := _position_of(id)
+			var enemy_id: String = _nearest_enemy_id()
+			var threat: Vector3 = _position_of(enemy_id)
 			var away: Vector3 = player.global_position - threat
 			if away.length() < 0.001:
 				away = Vector3(rng.randf_range(-1.0, 1.0), 0.0, rng.randf_range(-1.0, 1.0))
@@ -105,7 +105,7 @@ func _drive() -> void:
 	if topology == null:
 		player.bot_intent = Vector3.ZERO
 		return
-	var to_target := patrol_target - player.global_position
+	var to_target: Vector3 = patrol_target - player.global_position
 	to_target.y = 0.0
 	if to_target.length() < 0.05:
 		player.bot_intent = Vector3.ZERO
@@ -118,22 +118,22 @@ func _drive() -> void:
 		_try_close_unfreeze()
 
 func _try_close_tag() -> void:
-	var id := _nearest_enemy_id()
-	if id == "" or rules.active_team() != _team():
+	var enemy_id: String = _nearest_enemy_id()
+	if enemy_id == "" or rules.active_team() != _team():
 		return
-	if _dist_to_id(id) <= CLOSE_RADIUS:
-		rules.try_tag(player_id, id)
+	if _dist_to_id(enemy_id) <= CLOSE_RADIUS:
+		rules.try_tag(player_id, enemy_id)
 
 func _try_close_unfreeze() -> void:
-	var id := _nearest_frozen_teammate_id()
-	if id == "":
+	var teammate_id: String = _nearest_frozen_teammate_id()
+	if teammate_id == "":
 		return
-	if _dist_to_id(id) <= CLOSE_RADIUS:
-		rules.try_unfreeze(player_id, id)
+	if _dist_to_id(teammate_id) <= CLOSE_RADIUS:
+		rules.try_unfreeze(player_id, teammate_id)
 
 func _pick_patrol_target() -> void:
-	var radius := rng.randf_range(8.0, 32.0)
-	var angle := rng.randf_range(0.0, TAU)
+	var radius: float = rng.randf_range(8.0, 32.0)
+	var angle: float = rng.randf_range(0.0, TAU)
 	patrol_target = Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
 
 func _team() -> String:
@@ -143,30 +143,30 @@ func _opposing_team() -> String:
 	return "clown" if _team() == "mime" else "mime"
 
 func _nearest_enemy_id() -> String:
-	var best := ""
-	var best_d := INF
+	var best: String = ""
+	var best_d: float = INF
 	for id in rules.players.keys():
 		var p: Dictionary = rules.players[id]
 		if p["team"] == _team():
 			continue
 		if p["frozen"]:
 			continue
-		var d := _dist_to(p["position"])
+		var d: float = _dist_to(p["position"])
 		if d < best_d:
 			best_d = d
 			best = id
 	return best
 
 func _nearest_frozen_teammate_id() -> String:
-	var best := ""
-	var best_d := INF
+	var best: String = ""
+	var best_d: float = INF
 	for id in rules.players.keys():
 		var p: Dictionary = rules.players[id]
 		if p["team"] != _team():
 			continue
 		if not p["frozen"]:
 			continue
-		var d := _dist_to(p["position"])
+		var d: float = _dist_to(p["position"])
 		if d < best_d:
 			best_d = d
 			best = id
