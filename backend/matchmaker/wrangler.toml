@@ -14,10 +14,6 @@ id = "placeholder_kv_id"
 name = "cm-matchmaker-dev"
 vars = { ROOM_WORKER = "cm-room-dev", ENV = "dev" }
 
-[env.staging]
-name = "cm-matchmaker-staging"
-vars = { ROOM_WORKER = "cm-room-staging", ENV = "staging" }
-
 [env.production]
 name = "cm-matchmaker"
 vars = { ROOM_WORKER = "cm-room", ENV = "production" }
