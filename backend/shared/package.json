@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./protocol": "./src/protocol.ts",
-    "./topology": "./src/topology.ts"
+    "./topology": "./src/topology.ts",
+    "./labyrinth": "./src/labyrinth.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
