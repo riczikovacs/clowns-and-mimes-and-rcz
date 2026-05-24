@@ -2,11 +2,12 @@ extends "res://tests/test_case.gd"
 
 const BotAIScript := preload("res://scripts/bot_ai.gd")
 const GameRulesScript := preload("res://scripts/game_rules.gd")
+const TopologyScript := preload("res://scripts/topology/topology.gd")
 const PlaneTopology := preload("res://scripts/topology/plane_topology.gd")
 const PlayerScript := preload("res://scripts/player.gd")
 
 func _make_setup() -> Dictionary:
-	var topology: Node = PlaneTopology.new()
+	var topology: TopologyScript = PlaneTopology.new()
 	var rules: Node = GameRulesScript.new()
 	rules.topology = topology
 	var player: CharacterBody3D = CharacterBody3D.new()
