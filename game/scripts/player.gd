@@ -26,6 +26,10 @@ var sprint_energy: float = MAX_SPRINT:
 		sprint_energy = clampf(value, 0.0, MAX_SPRINT)
 		sprint_changed.emit(sprint_energy)
 
+## Driven by BotAI for bot players. Direction is in world space, length up to 1.
+var bot_intent: Vector3 = Vector3.ZERO
+var bot_sprint: bool = false
+
 var frozen: bool = false:
 	set(value):
 		if frozen == value:
@@ -57,9 +61,14 @@ func _input(event: InputEvent) -> void:
 		Input.set_mouse_mode(mode)
 
 func _physics_process(delta: float) -> void:
-	if frozen or not is_local or bot:
+	if frozen:
 		velocity = Vector3.ZERO
 		move_and_slide()
+		return
+	if bot:
+		_apply_bot_movement(delta)
+		return
+	if not is_local:
 		return
 	var input_dir := Vector3.ZERO
 	input_dir.z -= Input.get_action_strength("move_forward")
@@ -72,6 +81,23 @@ func _physics_process(delta: float) -> void:
 	var basis_dir := transform.basis * input_dir
 	velocity.x = basis_dir.x * speed
 	velocity.z = basis_dir.z * speed
+	move_and_slide()
+	if sprinting:
+		sprint_energy -= SPRINT_DRAIN_PER_S * delta
+	else:
+		sprint_energy += SPRINT_REGEN_PER_S * delta
+
+func _apply_bot_movement(delta: float) -> void:
+	var intent := bot_intent
+	if intent.length() > 1.0:
+		intent = intent.normalized()
+	var sprinting := bot_sprint and sprint_energy > 0.0 and intent.length() > 0.0
+	var speed := SPRINT_SPEED if sprinting else WALK_SPEED
+	velocity.x = intent.x * speed
+	velocity.z = intent.z * speed
+	if intent.length() > 0.01:
+		var target_yaw := atan2(-intent.x, -intent.z)
+		rotation.y = lerp_angle(rotation.y, target_yaw, clampf(8.0 * delta, 0.0, 1.0))
 	move_and_slide()
 	if sprinting:
 		sprint_energy -= SPRINT_DRAIN_PER_S * delta

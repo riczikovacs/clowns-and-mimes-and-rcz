@@ -10,6 +10,7 @@ const LABYRINTH := preload("res://scenes/labyrinth.tscn")
 const GameRulesScript := preload("res://scripts/game_rules.gd")
 const TopologyScript := preload("res://scripts/topology/topology.gd")
 const TopologyFactory := preload("res://scripts/topology/topology_factory.gd")
+const BotAIScript := preload("res://scripts/bot_ai.gd")
 
 const BOT_COUNT_PER_TEAM := 3
 const SPAWN_RADIUS := 2.5
@@ -86,6 +87,10 @@ func _spawn_player(id: String, p_name: String, team: String, is_bot: bool, is_lo
 		local_player = p
 		p.sprint_changed.connect(hud.set_sprint)
 		p.frozen_changed.connect(_on_local_frozen_changed)
+	if is_bot:
+		var ai := BotAIScript.new()
+		p.add_child(ai)
+		ai.attach(p, id, rules, topology)
 
 func _bot_name() -> String:
 	return UsernameGenerator.generate()
