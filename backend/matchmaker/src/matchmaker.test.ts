@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import worker, { type Env } from './index.ts';
 
-class FakeKV implements Pick<KVNamespace, 'get' | 'put' | 'list' | 'delete'> {
+class FakeKV {
   private readonly store = new Map<string, { value: string; expiresAt: number }>();
 
   async get(key: string): Promise<string | null> {
@@ -23,16 +23,17 @@ class FakeKV implements Pick<KVNamespace, 'get' | 'put' | 'list' | 'delete'> {
     this.store.delete(key);
   }
 
-  async list(options?: {
-    prefix?: string;
-    limit?: number;
-  }): Promise<KVNamespaceListResult<unknown, string>> {
+  async list(options?: { prefix?: string; limit?: number }): Promise<{
+    keys: { name: string }[];
+    list_complete: true;
+    cacheStatus: null;
+  }> {
     const prefix = options?.prefix ?? '';
     const keys = [...this.store.keys()]
       .filter((k) => k.startsWith(prefix))
       .slice(0, options?.limit ?? 1000)
       .map((name) => ({ name }));
-    return { keys, list_complete: true, cursor: '' } as KVNamespaceListResult<unknown, string>;
+    return { keys, list_complete: true, cacheStatus: null };
   }
 }
 

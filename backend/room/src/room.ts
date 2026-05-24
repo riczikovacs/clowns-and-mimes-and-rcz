@@ -46,7 +46,6 @@ export class Room implements DurableObject {
   private roundNumber = 0;
   private firstTeam: Team = 'mime';
   private tickHandle: ReturnType<typeof setInterval> | null = null;
-  private fillBotsRequested = false;
 
   constructor(private readonly state: DurableObjectState) {}
 
@@ -139,7 +138,6 @@ export class Room implements DurableObject {
 
   /** Fill empty slots with bots up to TEAM_TARGET per team. Idempotent. */
   fillBots(): void {
-    this.fillBotsRequested = true;
     for (const team of ['mime', 'clown'] as const) {
       while (this.tally(team) < TEAM_TARGET) {
         const id = crypto.randomUUID();
