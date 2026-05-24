@@ -19,12 +19,16 @@ const TAG_RADIUS = 1.4;
 const UNFREEZE_RADIUS = 1.4;
 const WORLD_WIDTH = 80;
 const MAX_PLAYERS = 16;
-const PLAYER_RADIUS = 0.4;
+const TEAM_TARGET = 4;
 const MAX_SPRINT = 100;
 const SPRINT_DRAIN_PER_S = 25;
 const SPRINT_REGEN_PER_S = 15;
 const WALK_SPEED = 3.2;
 const SPRINT_SPEED = 5.6;
+const MAX_TICK_TRAVEL = SPRINT_SPEED * 1.5; // anti-cheat: clamp per-tick displacement
+const TURN_FIRST_MS = 30_000;
+const TURN_STEP_MS = 30_000;
+const TURN_CAP_MS = 5 * 60_000;
 
 interface Connection {
   ws: WebSocket;
@@ -40,6 +44,7 @@ export class Room implements DurableObject {
   private topology: Topology = 'plane';
   private seed = Math.floor(Math.random() * 2 ** 31);
   private roundNumber = 0;
+  private firstTeam: Team = 'mime';
   private tickHandle: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly state: DurableObjectState) {}
@@ -105,16 +110,16 @@ export class Room implements DurableObject {
       ws.close(4001, 'version');
       return;
     }
-    if (this.players.size >= MAX_PLAYERS) {
+    if (this.humanPlayers().length >= MAX_PLAYERS - this.botPlayers().length) {
       this.send(ws, { t: 'error', code: 'room_full', message: 'room full' });
       ws.close(4002, 'full');
       return;
     }
     const id = crypto.randomUUID();
-    const team = prefer ?? (this.tally('mime') <= this.tally('clown') ? 'mime' : 'clown');
-    const state: PlayerState = {
+    const team = prefer ?? this.pickTeam();
+    const player: PlayerState = {
       id,
-      name: name.slice(0, 24) || 'Player',
+      name: this.sanitizeName(name),
       team,
       bot: false,
       position: { x: 0, z: 0 },
@@ -122,14 +127,36 @@ export class Room implements DurableObject {
       frozen: false,
       sprintEnergy: MAX_SPRINT,
     };
-    this.players.set(id, state);
+    this.players.set(id, player);
     this.connections.set(ws, { ws, playerId: id });
-    const snapshot = this.snapshot();
-    this.send(ws, { t: 'snapshot', snapshot, youAre: id });
+    this.send(ws, { t: 'snapshot', snapshot: this.snapshot(), youAre: id });
     this.broadcast({ t: 'event', kind: { kind: 'phase', phase: this.phase } });
-    if (this.phase === 'filling' && this.players.size >= 2 && !this.tickHandle) {
+    if (this.phase === 'filling' && this.humanPlayers().length >= 2 && !this.tickHandle) {
       this.startCountdown();
     }
+  }
+
+  /** Fill empty slots with bots up to TEAM_TARGET per team. Idempotent. */
+  fillBots(): void {
+    for (const team of ['mime', 'clown'] as const) {
+      while (this.tally(team) < TEAM_TARGET) {
+        const id = crypto.randomUUID();
+        this.players.set(id, {
+          id,
+          name: `Bot-${id.slice(0, 4)}`,
+          team,
+          bot: true,
+          position: { x: (Math.random() - 0.5) * 4, z: (Math.random() - 0.5) * 4 },
+          yaw: 0,
+          frozen: false,
+          sprintEnergy: MAX_SPRINT,
+        });
+      }
+    }
+  }
+
+  setTopology(t: Topology): void {
+    this.topology = t;
   }
 
   private detach(ws: WebSocket): void {
@@ -138,7 +165,7 @@ export class Room implements DurableObject {
     this.connections.delete(ws);
     this.players.delete(conn.playerId);
     this.lastInputs.delete(conn.playerId);
-    if (this.players.size === 0) {
+    if (this.humanPlayers().length === 0) {
       this.stopTick();
       this.phase = 'filling';
     }
@@ -211,6 +238,22 @@ export class Room implements DurableObject {
     return n;
   }
 
+  private humanPlayers(): PlayerState[] {
+    return [...this.players.values()].filter((p) => !p.bot);
+  }
+
+  private botPlayers(): PlayerState[] {
+    return [...this.players.values()].filter((p) => p.bot);
+  }
+
+  private pickTeam(): Team {
+    return this.tally('mime') <= this.tally('clown') ? 'mime' : 'clown';
+  }
+
+  private sanitizeName(name: string): string {
+    return name.replace(/[^\w \-.]/g, '').slice(0, 24) || 'Player';
+  }
+
   private checkWin(): void {
     const mimesActive = [...this.players.values()].filter((p) => p.team === 'mime' && !p.frozen);
     const clownsActive = [...this.players.values()].filter((p) => p.team === 'clown' && !p.frozen);
@@ -226,6 +269,7 @@ export class Room implements DurableObject {
   }
 
   private startCountdown(): void {
+    this.firstTeam = Math.random() < 0.5 ? 'mime' : 'clown';
     this.phase = 'countdown';
     this.turnEndsAt = Date.now() + COUNTDOWN_MS;
     this.broadcast({ t: 'event', kind: { kind: 'phase', phase: this.phase } });
@@ -252,25 +296,30 @@ export class Room implements DurableObject {
 
   private beginNextTurn(): void {
     this.roundNumber += 1;
-    const teamFirst: Team = this.roundNumber === 1 && Math.random() < 0.5 ? 'mime' : 'clown';
-    const nextTeam: Team = this.phase === 'turn_mime' ? 'clown' : teamFirst;
-    this.phase = `turn_${nextTeam}` as RoomPhase;
-    const durMs = Math.min(5 * 60_000, 30_000 + (this.roundNumber - 1) * 30_000);
-    this.turnEndsAt = Date.now() + durMs;
+    const next: Team =
+      this.phase === 'turn_mime' ? 'clown' : this.phase === 'turn_clown' ? 'mime' : this.firstTeam;
+    this.phase = `turn_${next}` as RoomPhase;
+    const ms = Math.min(TURN_CAP_MS, TURN_FIRST_MS + (this.roundNumber - 1) * TURN_STEP_MS);
+    this.turnEndsAt = Date.now() + ms;
     this.broadcast({ t: 'event', kind: { kind: 'phase', phase: this.phase } });
   }
 
+  /** Applies player inputs with anti-cheat distance clamping. */
   private simulate(): void {
     const dt = TICK_MS / 1000;
     for (const [id, input] of this.lastInputs) {
       const p = this.players.get(id);
-      if (!p || p.frozen) continue;
+      if (!p || p.bot || p.frozen) continue;
       const wantSprint = input.sprint && p.sprintEnergy > 0;
       const speed = wantSprint ? SPRINT_SPEED : WALK_SPEED;
       const moveLen = Math.hypot(input.move.x, input.move.z);
       const nx = moveLen > 0 ? input.move.x / moveLen : 0;
       const nz = moveLen > 0 ? input.move.z / moveLen : 0;
-      const next = { x: p.position.x + nx * speed * dt, z: p.position.z + nz * speed * dt };
+      const dx = nx * speed * dt;
+      const dz = nz * speed * dt;
+      const travel = Math.hypot(dx, dz);
+      const scale = travel > MAX_TICK_TRAVEL * dt ? (MAX_TICK_TRAVEL * dt) / travel : 1;
+      const next = { x: p.position.x + dx * scale, z: p.position.z + dz * scale };
       p.position = wrapPosition(next, this.topology, WORLD_WIDTH);
       p.yaw = input.lookYaw;
       const drained = wantSprint && moveLen > 0;
@@ -279,7 +328,6 @@ export class Room implements DurableObject {
         0,
         MAX_SPRINT,
       );
-      void PLAYER_RADIUS;
     }
   }
 
