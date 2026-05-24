@@ -6,6 +6,27 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-24
+
+First release with all three platform installers. v0.1.0 failed to publish a macOS asset because Godot 4 refuses universal/arm64 exports unless ETC2 ASTC import is enabled in the project; that setting is on now. Also lands topology-aware A\* pathfinding and server-side wall collision for bots.
+
+### Fixed
+
+- macOS export config enables ETC2 ASTC import. Universal binary builds in CI and the release workflow now produces the macOS .zip alongside Windows and Linux.
+- Website footer trimmed of the issue-tracker plug.
+
+### Added
+
+- Topology-aware A\* pathfinding. The labyrinth builds a hand-rolled `AStar2D` graph whose border cells include seam edges (torus wraps both axes, Klein flips Z when crossing X). Bots find shortest paths across the seam instead of routing the long way. New `Topology.delta()` returns the shortest wrapped displacement and feeds bot steering.
+- Server-side wall geometry. `backend/shared/src/labyrinth.ts` mirrors the GDScript wall generator; the room generates walls in its constructor and rejects bot moves that would clip through them. Both implementations share a pure `(seed, ring, k)` integer hash for gap placement so client and server always compute the same maze.
+- `@cm/smoke` package: a single-file TS script that hits a deployed matchmaker end to end (healthz, create lobby, join by code, websocket snapshot). Useful as a manual deploy verification.
+- `scripts/playtest-dev.sh` launches the Godot editor pointed at the dev backend so a maintainer can play against live workers without configuration.
+
+### Changed
+
+- Retired the `staging` long-lived branch. Branch model is `feature -> dev -> main`. Both `main` and `dev` are protected by branch rulesets that require PRs and green status checks.
+- ARCHITECTURE.md refreshed to match shipped behavior: matchmaker open-room reuse via KV listing, `WORKERS_SUBDOMAIN` in the wsUrl, bot AI sections covering both client-side A\* and server-side fill plus tick, JSON-over-WS protocol, environments table with the real `seanreid.workers.dev` subdomains, smoke and playtest tooling under observability. Dropped the stale Sentry mention from the doc and the budget table.
+
 ## [0.1.0] - 2026-05-24
 
 First playable release. Cross-platform installers for Windows, macOS, and Linux are published alongside this tag. The backend matchmaker and room are live on Cloudflare Workers under `*.seanreid.workers.dev`. The website at https://sean-reid.github.io/clowns-and-mimes/ pulls download links from this release.

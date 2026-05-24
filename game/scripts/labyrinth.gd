@@ -2,7 +2,7 @@ extends Node3D
 
 ## Symmetric labyrinth with concentric ring regions. Walls are deterministic
 ## given a seed, alternate connector orientation between rings, are solid
-## colliders, and feed an AStarGrid2D for bot pathfinding.
+## colliders, and feed a topology-aware AStar2D graph for bot pathfinding.
 
 const TopologyScript := preload("res://scripts/topology/topology.gd")
 
@@ -18,7 +18,8 @@ const PLAYER_CLEARANCE := 0.55
 
 var seed_value: int = 0
 var topology: TopologyScript
-var pathfinder: AStarGrid2D
+var pathfinder: AStar2D
+var solid_cells: Dictionary = {}
 
 var walls_root: Node3D
 var floor_node: MeshInstance3D
@@ -42,12 +43,11 @@ func find_path(from: Vector3, to: Vector3) -> Array[Vector3]:
 		return []
 	var from_cell: Vector2i = _world_to_cell(from)
 	var to_cell: Vector2i = _world_to_cell(to)
-	if pathfinder.is_point_solid(to_cell):
-		# Target sits inside a wall - nudge to the nearest open cell.
+	if _is_solid(to_cell):
 		to_cell = _nearest_open_cell(to_cell)
-	if pathfinder.is_point_solid(from_cell):
+	if _is_solid(from_cell):
 		from_cell = _nearest_open_cell(from_cell)
-	var raw: PackedVector2Array = pathfinder.get_point_path(from_cell, to_cell)
+	var raw: PackedVector2Array = pathfinder.get_point_path(_cell_id(from_cell), _cell_id(to_cell))
 	var out: Array[Vector3] = []
 	for point in raw:
 		out.append(_cell_to_world(Vector2i(int(point.x), int(point.y))))
@@ -95,21 +95,29 @@ func _build_ring(ring_index: int, rng: RandomNumberGenerator) -> void:
 		_add_arc_wall(radius, start_angle, end_angle)
 
 func _gaps_for_ring(ring_index: int) -> int:
-	# Inner rings open up more; outer rings keep more wall.
 	return max(1, SYMMETRY_ORDER / (2 + ring_index))
 
 func _choose_gap_indices(
-	segments: int, gap_count: int, ring_index: int, rng: RandomNumberGenerator
+	segments: int, gap_count: int, ring_index: int, _rng: RandomNumberGenerator
 ) -> Array[int]:
-	# Even rings start at offset 0, odd rings stagger by one segment so the
-	# connectors between rings do not line up. This produces the alternating
-	# connector pattern.
+	# Deterministic jitter derived from (seed, ring, k) instead of an RNG so
+	# the TypeScript server can compute identical walls without sharing a
+	# random stream. Matches backend/shared/src/labyrinth.ts::gapJitter.
 	var stagger: int = 1 if ring_index % 2 == 1 else 0
 	var step: int = max(1, segments / gap_count)
 	var indices: Array[int] = []
 	for k in gap_count:
-		indices.append((k * step + stagger + rng.randi() % 2) % segments)
+		indices.append((k * step + stagger + _gap_jitter(seed_value, ring_index, k)) % segments)
 	return indices
+
+static func _gap_jitter(seed_value_arg: int, ring: int, k: int) -> int:
+	var mask: int = 0xFFFFFFFF
+	var h: int = (seed_value_arg ^ 0x9e3779b9) & mask
+	h = ((h ^ (ring + 0x85ebca6b)) * 0xc2b2ae35) & mask
+	h = h ^ ((h >> 16) & mask)
+	h = ((h ^ (k + 0x27d4eb2f)) * 0x165667b1) & mask
+	h = h ^ ((h >> 13) & mask)
+	return h % 2
 
 func _add_arc_wall(radius: float, start_angle: float, end_angle: float) -> void:
 	var subdivisions: int = 4
@@ -129,7 +137,7 @@ func _add_arc_wall(radius: float, start_angle: float, end_angle: float) -> void:
 
 func _make_wall(seg_length: float) -> StaticBody3D:
 	var body := StaticBody3D.new()
-	body.collision_layer = 1  # Layer 1 so the default CharacterBody3D mask collides.
+	body.collision_layer = 1
 	body.collision_mask = 0
 	var mesh_node := MeshInstance3D.new()
 	mesh_node.name = "Mesh"
@@ -149,24 +157,72 @@ func _make_wall(seg_length: float) -> StaticBody3D:
 	return body
 
 # ---------------------------------------------------------------------------
-# Pathfinding grid
+# Pathfinding graph
 # ---------------------------------------------------------------------------
 
 func _build_pathfinder() -> void:
-	pathfinder = AStarGrid2D.new()
-	pathfinder.region = Rect2i(0, 0, GRID_RES, GRID_RES)
-	pathfinder.cell_size = Vector2.ONE
-	pathfinder.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_AT_LEAST_ONE_WALKABLE
-	pathfinder.default_compute_heuristic = AStarGrid2D.HEURISTIC_OCTILE
-	pathfinder.update()
+	pathfinder = AStar2D.new()
+	solid_cells.clear()
+	for cy in range(GRID_RES):
+		for cx in range(GRID_RES):
+			pathfinder.add_point(_cell_id(Vector2i(cx, cy)), Vector2(cx, cy))
 	for segment in _wall_segments:
 		_mark_wall_solid(segment["transform"], segment["length"])
+	_connect_neighbors()
+
+func _connect_neighbors() -> void:
+	var wrap_x: bool = topology != null and topology.wraps_x()
+	var wrap_z: bool = topology != null and topology.wraps_z()
+	var flip_z: bool = topology != null and topology.flips_z_on_x_wrap()
+	for cy in range(GRID_RES):
+		for cx in range(GRID_RES):
+			var from_cell := Vector2i(cx, cy)
+			if _is_solid(from_cell):
+				continue
+			for dx in [-1, 0, 1]:
+				for dy in [-1, 0, 1]:
+					if dx == 0 and dy == 0:
+						continue
+					var nb: Vector2i = _wrap_cell(Vector2i(cx + dx, cy + dy), wrap_x, wrap_z, flip_z)
+					if nb.x < 0:
+						continue
+					if _is_solid(nb):
+						continue
+					var from_id: int = _cell_id(from_cell)
+					var to_id: int = _cell_id(nb)
+					if not pathfinder.are_points_connected(from_id, to_id):
+						pathfinder.connect_points(from_id, to_id, true)
+
+func _wrap_cell(cell: Vector2i, wrap_x: bool, wrap_z: bool, flip_z: bool) -> Vector2i:
+	var cx: int = cell.x
+	var cy: int = cell.y
+	var x_crossed := false
+	if cx < 0:
+		if not wrap_x:
+			return Vector2i(-1, -1)
+		cx += GRID_RES
+		x_crossed = true
+	elif cx >= GRID_RES:
+		if not wrap_x:
+			return Vector2i(-1, -1)
+		cx -= GRID_RES
+		x_crossed = true
+	if cy < 0:
+		if not wrap_z:
+			return Vector2i(-1, -1)
+		cy += GRID_RES
+	elif cy >= GRID_RES:
+		if not wrap_z:
+			return Vector2i(-1, -1)
+		cy -= GRID_RES
+	if x_crossed and flip_z:
+		cy = GRID_RES - 1 - cy
+	return Vector2i(cx, cy)
 
 func _mark_wall_solid(wall_xform: Transform3D, seg_length: float) -> void:
 	var half_len: float = seg_length * 0.5 + PLAYER_CLEARANCE
 	var half_thick: float = WALL_THICKNESS * 0.5 + PLAYER_CLEARANCE
 	var inverse: Transform3D = wall_xform.affine_inverse()
-	# World-space AABB of the inflated wall for fast cell-range culling.
 	var min_pos := Vector3(INF, 0.0, INF)
 	var max_pos := Vector3(-INF, 0.0, -INF)
 	for dx in [-half_len, half_len]:
@@ -184,7 +240,15 @@ func _mark_wall_solid(wall_xform: Transform3D, seg_length: float) -> void:
 			var world_point: Vector3 = _cell_to_world(cell)
 			var local: Vector3 = inverse * world_point
 			if absf(local.x) <= half_len and absf(local.z) <= half_thick:
-				pathfinder.set_point_solid(cell, true)
+				solid_cells[_cell_id(cell)] = true
+
+func _is_solid(cell: Vector2i) -> bool:
+	if cell.x < 0 or cell.x >= GRID_RES or cell.y < 0 or cell.y >= GRID_RES:
+		return true
+	return solid_cells.has(_cell_id(cell))
+
+func _cell_id(cell: Vector2i) -> int:
+	return cell.y * GRID_RES + cell.x
 
 func _world_to_cell(p: Vector3) -> Vector2i:
 	var half: float = TopologyScript.WIDTH * 0.5
@@ -205,6 +269,6 @@ func _nearest_open_cell(cell: Vector2i) -> Vector2i:
 				var c := Vector2i(cell.x + dx, cell.y + dy)
 				if c.x < 0 or c.x >= GRID_RES or c.y < 0 or c.y >= GRID_RES:
 					continue
-				if not pathfinder.is_point_solid(c):
+				if not _is_solid(c):
 					return c
 	return cell

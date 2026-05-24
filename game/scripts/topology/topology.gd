@@ -22,9 +22,26 @@ func distance(a: Vector3, b: Vector3) -> float:
 	d.y = 0.0
 	return d.length()
 
+## Shortest displacement that, applied at `from` and then wrapped, lands at `to`.
+## Used by bot steering and any other consumer that needs to face the right way
+## across a seam. Returns the canonical (a - b) on a flat topology.
+func delta(from: Vector3, to: Vector3) -> Vector3:
+	var d := to - from
+	d.y = 0.0
+	return d
+
 func name() -> String:
 	push_error("Topology.name must be overridden")
 	return ""
+
+func wraps_x() -> bool:
+	return false
+
+func wraps_z() -> bool:
+	return false
+
+func flips_z_on_x_wrap() -> bool:
+	return false
 
 static func half() -> float:
 	return WIDTH / 2.0
