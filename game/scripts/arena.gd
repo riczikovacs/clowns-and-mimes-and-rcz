@@ -154,18 +154,24 @@ func _on_won(team: String) -> void:
 
 const MIME_BATTLE_CRIES := [
 	"MIMES- ATTACK!",
-	"MIMES- POUNCE IN SILENCE!",
-	"MIMES- ENTRAP THEM!",
 	"MIMES- STRIKE!",
-	"MIMES- THE STAGE IS YOURS!",
+	"MIMES- POUNCE!",
+	"MIMES- ENTRAP!",
+	"MIMES- BAFFLE!",
+	"MIMES- SHUSH!",
+	"MIMES- GLARE!",
+	"MIMES- LUNGE!",
 ]
 
 const CLOWN_BATTLE_CRIES := [
 	"CLOWNS- ATTACK!",
-	"CLOWNS- HONK THEIR DOOM!",
-	"CLOWNS- PILE ON!",
-	"CLOWNS- UNLEASH THE BIG TOP!",
-	"CLOWNS- BRING THE LAUGHS!",
+	"CLOWNS- STRIKE!",
+	"CLOWNS- HONK!",
+	"CLOWNS- BOOP!",
+	"CLOWNS- CACKLE!",
+	"CLOWNS- CHARGE!",
+	"CLOWNS- ROMP!",
+	"CLOWNS- POUNCE!",
 ]
 
 func _on_phase_changed(phase: int) -> void:
