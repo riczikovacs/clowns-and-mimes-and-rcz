@@ -8,6 +8,7 @@ import type {
 export interface Env {
   LOBBY_CODES: KVNamespace;
   ROOM_WORKER: string;
+  WORKERS_SUBDOMAIN: string;
   ENV: string;
 }
 
@@ -137,7 +138,8 @@ function randomCode(): string {
 }
 
 function wsUrlFor(env: Env, roomId: string): string {
-  return `wss://${env.ROOM_WORKER}.workers.dev/ws/${roomId}`;
+  const subdomain = env.WORKERS_SUBDOMAIN ? `${env.WORKERS_SUBDOMAIN}.` : '';
+  return `wss://${env.ROOM_WORKER}.${subdomain}workers.dev/ws/${roomId}`;
 }
 
 function json<T>(body: T, status = 200): Response {

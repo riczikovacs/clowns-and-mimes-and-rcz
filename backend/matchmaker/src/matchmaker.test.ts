@@ -41,6 +41,7 @@ function makeEnv(): Env {
   return {
     LOBBY_CODES: new FakeKV() as unknown as KVNamespace,
     ROOM_WORKER: 'test-room',
+    WORKERS_SUBDOMAIN: 'test-account',
     ENV: 'test',
   };
 }
