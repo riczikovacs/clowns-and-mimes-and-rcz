@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-game:
+    name: Build game (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: ubuntu-latest
+            preset: 'Windows Desktop'
+            output: clowns-and-mimes-windows.exe
+          - os: macos
+            runner: macos-latest
+            preset: 'macOS'
+            output: clowns-and-mimes-macos.zip
+          - os: linux
+            runner: ubuntu-latest
+            preset: 'Linux/X11'
+            output: clowns-and-mimes-linux.x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot 4 (Linux runners)
+        if: matrix.runner == 'ubuntu-latest'
+        run: |
+          curl -L -o godot.zip https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          sudo mv Godot_v4.3-stable_linux.x86_64 /usr/local/bin/godot
+          sudo chmod +x /usr/local/bin/godot
+          curl -L -o templates.tpz https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz
+          mkdir -p ~/.local/share/godot/export_templates/4.3.stable
+          unzip -q templates.tpz -d /tmp/templates
+          mv /tmp/templates/templates/* ~/.local/share/godot/export_templates/4.3.stable/
+      - name: Install Godot 4 (macOS runner)
+        if: matrix.runner == 'macos-latest'
+        run: |
+          curl -L -o godot.zip https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_macos.universal.zip
+          unzip -q godot.zip
+          sudo mv Godot.app /Applications/Godot.app
+          curl -L -o templates.tpz https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz
+          mkdir -p ~/Library/Application\ Support/Godot/export_templates/4.3.stable
+          unzip -q templates.tpz -d /tmp/templates
+          mv /tmp/templates/templates/* ~/Library/Application\ Support/Godot/export_templates/4.3.stable/
+      - name: Export
+        shell: bash
+        run: |
+          mkdir -p out
+          if [ "${{ matrix.runner }}" = "macos-latest" ]; then
+            /Applications/Godot.app/Contents/MacOS/Godot --headless --path game --export-release "${{ matrix.preset }}" "../out/${{ matrix.output }}"
+          else
+            godot --headless --path game --export-release "${{ matrix.preset }}" "../out/${{ matrix.output }}"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: out/${{ matrix.output }}
+
+  publish-release:
+    needs: build-game
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
+
+  deploy-backend:
+    needs: build-game
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Deploy matchmaker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --filter @cm/matchmaker deploy:production
+      - name: Deploy room
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm --filter @cm/room deploy:production
+
+  deploy-website:
+    needs: build-game
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter website build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
