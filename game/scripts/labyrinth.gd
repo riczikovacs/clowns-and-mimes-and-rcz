@@ -98,14 +98,26 @@ func _gaps_for_ring(ring_index: int) -> int:
 	return max(1, SYMMETRY_ORDER / (2 + ring_index))
 
 func _choose_gap_indices(
-	segments: int, gap_count: int, ring_index: int, rng: RandomNumberGenerator
+	segments: int, gap_count: int, ring_index: int, _rng: RandomNumberGenerator
 ) -> Array[int]:
+	# Deterministic jitter derived from (seed, ring, k) instead of an RNG so
+	# the TypeScript server can compute identical walls without sharing a
+	# random stream. Matches backend/shared/src/labyrinth.ts::gapJitter.
 	var stagger: int = 1 if ring_index % 2 == 1 else 0
 	var step: int = max(1, segments / gap_count)
 	var indices: Array[int] = []
 	for k in gap_count:
-		indices.append((k * step + stagger + rng.randi() % 2) % segments)
+		indices.append((k * step + stagger + _gap_jitter(seed_value, ring_index, k)) % segments)
 	return indices
+
+static func _gap_jitter(seed_value_arg: int, ring: int, k: int) -> int:
+	var mask: int = 0xFFFFFFFF
+	var h: int = (seed_value_arg ^ 0x9e3779b9) & mask
+	h = ((h ^ (ring + 0x85ebca6b)) * 0xc2b2ae35) & mask
+	h = h ^ ((h >> 16) & mask)
+	h = ((h ^ (k + 0x27d4eb2f)) * 0x165667b1) & mask
+	h = h ^ ((h >> 13) & mask)
+	return h % 2
 
 func _add_arc_wall(radius: float, start_angle: float, end_angle: float) -> void:
 	var subdivisions: int = 4
