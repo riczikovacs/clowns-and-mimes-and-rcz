@@ -106,13 +106,8 @@ jobs:
           sudo chmod +x /usr/local/bin/godot
       - name: Validate project opens
         run: godot --headless --path game --quit
-      - name: Run GUT tests if present
-        run: |
-          if [ -d game/addons/gut ]; then
-            godot --headless --path game -s addons/gut/gut_cmdln.gd -gtest=res://tests -gexit
-          else
-            echo "GUT not yet installed, skipping"
-          fi
+      - name: Run game unit tests
+        run: godot --headless --path game -s res://tests/test_runner.gd
 
   security-audit:
     name: Dependency audit
