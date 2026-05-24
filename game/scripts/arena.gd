@@ -112,7 +112,7 @@ func _physics_process(_delta: float) -> void:
 		_try_local_interaction()
 
 func _try_local_interaction() -> void:
-	var active := rules.active_team()
+	var active: String = rules.active_team()
 	for id in player_nodes.keys():
 		if id == local_player_id:
 			continue
@@ -152,7 +152,7 @@ func _on_saved(victim_id: String, savior_id: String) -> void:
 	_render_team_status()
 
 func _on_won(team: String) -> void:
-	var victory := (team == local_player.team)
+	var victory: bool = team == local_player.team
 	hud.show_end(victory)
 	AudioBus.set_bus_volume("Music", 0.0)
 	# Audio stingers attach in the polish phase once assets are vendored.

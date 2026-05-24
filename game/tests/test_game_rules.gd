@@ -4,12 +4,12 @@ const GameRulesScript := preload("res://scripts/game_rules.gd")
 const PlaneTopology := preload("res://scripts/topology/plane_topology.gd")
 
 func _make_rules() -> Node:
-	var rules := GameRulesScript.new()
+	var rules: Node = GameRulesScript.new()
 	rules.topology = PlaneTopology.new()
 	return rules
 
 func test_tag_requires_active_team_turn() -> void:
-	var rules := _make_rules()
+	var rules: Node = _make_rules()
 	rules.register_player("a", "mime", Vector3(0.0, 0.0, 0.0), "A", false)
 	rules.register_player("b", "clown", Vector3(0.5, 0.0, 0.0), "B", false)
 	rules.phase = GameRulesScript.Phase.TURN_CLOWN
@@ -20,14 +20,14 @@ func test_tag_requires_active_team_turn() -> void:
 	assert_true(rules.players["a"]["frozen"], "victim is frozen")
 
 func test_tag_requires_radius() -> void:
-	var rules := _make_rules()
+	var rules: Node = _make_rules()
 	rules.register_player("a", "mime", Vector3(0.0, 0.0, 0.0), "A", false)
 	rules.register_player("b", "clown", Vector3(5.0, 0.0, 0.0), "B", false)
 	rules.phase = GameRulesScript.Phase.TURN_MIME
 	assert_false(rules.try_tag("a", "b"), "tag rejected when out of range")
 
 func test_unfreeze_requires_same_team_and_proximity() -> void:
-	var rules := _make_rules()
+	var rules: Node = _make_rules()
 	rules.register_player("a", "mime", Vector3(0.0, 0.0, 0.0), "A", false)
 	rules.register_player("b", "mime", Vector3(0.4, 0.0, 0.0), "B", false)
 	rules.register_player("c", "clown", Vector3(0.4, 0.0, 0.0), "C", false)
@@ -38,7 +38,7 @@ func test_unfreeze_requires_same_team_and_proximity() -> void:
 	assert_false(rules.try_unfreeze("a", "c"), "cannot unfreeze opposing team")
 
 func test_unfreeze_blocked_when_savior_frozen() -> void:
-	var rules := _make_rules()
+	var rules: Node = _make_rules()
 	rules.register_player("a", "mime", Vector3(0.0, 0.0, 0.0), "A", false)
 	rules.register_player("b", "mime", Vector3(0.4, 0.0, 0.0), "B", false)
 	rules.players["a"]["frozen"] = true
@@ -46,7 +46,7 @@ func test_unfreeze_blocked_when_savior_frozen() -> void:
 	assert_false(rules.try_unfreeze("a", "b"), "frozen savior cannot save")
 
 func test_win_emits_when_one_team_fully_frozen() -> void:
-	var rules := _make_rules()
+	var rules: Node = _make_rules()
 	rules.register_player("a", "mime", Vector3(0.0, 0.0, 0.0), "A", false)
 	rules.register_player("b", "clown", Vector3(0.4, 0.0, 0.0), "B", false)
 	var winner: Array[String] = []
@@ -57,7 +57,7 @@ func test_win_emits_when_one_team_fully_frozen() -> void:
 	assert_eq(winner[0], "clown", "clown wins")
 
 func test_turn_progression_advances_phase() -> void:
-	var rules := _make_rules()
+	var rules: Node = _make_rules()
 	rules.start(PlaneTopology.new())
 	assert_eq(rules.phase, GameRulesScript.Phase.COUNTDOWN, "starts in countdown")
 	rules.phase_ends_at = 0.0
