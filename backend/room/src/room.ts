@@ -92,6 +92,16 @@ interface Connection {
   playerId: string;
 }
 
+/**
+ * Subset of worker env the Room DO reads. MATCHMAKER_URL points at the
+ * matchmaker worker; the Room posts roster-change notifications there so the
+ * MatchmakerDO can keep accurate humans/bots counts for routing. Optional
+ * because tests construct the Room without the binding wired.
+ */
+export interface RoomEnv {
+  MATCHMAKER_URL?: string;
+}
+
 export class Room implements DurableObject {
   private readonly connections = new Map<WebSocket, Connection>();
   private readonly players = new Map<string, PlayerState>();
@@ -116,8 +126,44 @@ export class Room implements DurableObject {
   private readonly positionHistory = new Map<string, Array<{ t: number; x: number; z: number }>>();
   private walls: readonly WallSegment[] = [];
 
-  constructor(private readonly state: DurableObjectState) {
+  constructor(
+    private readonly state: DurableObjectState,
+    private readonly env: RoomEnv = {},
+  ) {
     this.walls = generateWalls(this.seed, this.topology);
+  }
+
+  /**
+   * Best-effort POST to the matchmaker so its open-room counts stay current.
+   * Called after every roster change (join, detach, fill, bot kick). The
+   * matchmaker is global state outside the room's gameplay loop; if the
+   * fetch fails or MATCHMAKER_URL is missing, gameplay continues unaffected.
+   */
+  private notifyMatchmaker(humans: number, bots: number): void {
+    const base = this.env.MATCHMAKER_URL;
+    if (!base) return;
+    const roomId = this.state.id.toString();
+    fetch(`${base}/lobby/room-state`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId, humans, bots }),
+    }).catch(() => {
+      // best-effort; ignore failures
+    });
+  }
+
+  /** Tell the matchmaker the room has emptied so it can drop the entry. */
+  private detachMatchmaker(): void {
+    const base = this.env.MATCHMAKER_URL;
+    if (!base) return;
+    const roomId = this.state.id.toString();
+    fetch(`${base}/lobby/room-detach`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ roomId }),
+    }).catch(() => {
+      // best-effort
+    });
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -225,6 +271,7 @@ export class Room implements DurableObject {
     } else if (this.phase === 'filling' && this.botFillHandle === null && !this.tickHandle) {
       this.scheduleBotFill();
     }
+    this.notifyMatchmaker(this.humanPlayers().length, this.botPlayers().length);
   }
 
   /** Schedule a one-shot bot fill so a solo joiner gets opponents within a few seconds. */
@@ -260,6 +307,7 @@ export class Room implements DurableObject {
         });
       }
     }
+    this.notifyMatchmaker(this.humanPlayers().length, this.botPlayers().length);
   }
 
   private randomPatrolPoint(): { x: number; z: number } {
@@ -339,6 +387,9 @@ export class Room implements DurableObject {
       this.cancelBotFill();
       this.clearBots();
       this.phase = 'filling';
+      this.detachMatchmaker();
+    } else {
+      this.notifyMatchmaker(this.humanPlayers().length, this.botPlayers().length);
     }
   }
 
@@ -487,6 +538,7 @@ export class Room implements DurableObject {
         this.players.delete(id);
         this.botMinds.delete(id);
         this.lastSavedAt.delete(id);
+        this.notifyMatchmaker(this.humanPlayers().length, this.botPlayers().length);
         return;
       }
     }
