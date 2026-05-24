@@ -1,0 +1,65 @@
+extends Node
+
+## Talks to the matchmaker Worker over HTTP. Three operations: create a private
+## lobby, join a private lobby by code, and join an open stranger lobby. Each
+## resolves to a Dictionary with ws_url and room_id (or pushes an error signal).
+
+const ServerConfig := preload("res://scripts/network/server_config.gd")
+
+signal lobby_created(code: String, room_id: String, ws_url: String)
+signal lobby_joined(room_id: String, ws_url: String)
+signal request_failed(reason: String)
+
+func create_private(topology: String) -> void:
+	_post("/lobby", {"topology": topology}, _on_create_response)
+
+func join_code(code: String) -> void:
+	if code.length() < 4:
+		request_failed.emit("code too short")
+		return
+	_post("/lobby/%s/join" % code.to_upper(), {}, _on_join_response)
+
+func join_open() -> void:
+	_post("/open/join", {}, _on_join_response)
+
+func _post(path: String, body: Dictionary, on_response: Callable) -> void:
+	var http := HTTPRequest.new()
+	add_child(http)
+	http.timeout = 10.0
+	http.request_completed.connect(_make_handler(http, on_response))
+	var url: String = ServerConfig.matchmaker_url() + path
+	var headers: PackedStringArray = ["Content-Type: application/json", "Accept: application/json"]
+	var payload: String = JSON.stringify(body) if body.size() > 0 else "{}"
+	var err: int = http.request(url, headers, HTTPClient.METHOD_POST, payload)
+	if err != OK:
+		request_failed.emit("could not start request: %d" % err)
+		http.queue_free()
+
+func _make_handler(http: HTTPRequest, on_response: Callable) -> Callable:
+	return func(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+		http.queue_free()
+		if code < 200 or code >= 300:
+			request_failed.emit("matchmaker returned %d" % code)
+			return
+		var parsed: Variant = JSON.parse_string(body.get_string_from_utf8())
+		if typeof(parsed) != TYPE_DICTIONARY:
+			request_failed.emit("matchmaker response was not json")
+			return
+		on_response.call(parsed)
+
+func _on_create_response(parsed: Dictionary) -> void:
+	var code: String = parsed.get("code", "")
+	var room_id: String = parsed.get("roomId", "")
+	var ws_url: String = parsed.get("wsUrl", "")
+	if code.is_empty() or room_id.is_empty() or ws_url.is_empty():
+		request_failed.emit("missing fields in create response")
+		return
+	lobby_created.emit(code, room_id, ws_url)
+
+func _on_join_response(parsed: Dictionary) -> void:
+	var room_id: String = parsed.get("roomId", "")
+	var ws_url: String = parsed.get("wsUrl", "")
+	if room_id.is_empty() or ws_url.is_empty():
+		request_failed.emit("missing fields in join response")
+		return
+	lobby_joined.emit(room_id, ws_url)
