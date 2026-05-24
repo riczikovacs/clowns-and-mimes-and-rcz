@@ -9,6 +9,7 @@ signal sprint_changed(value: float)
 signal frozen_changed(frozen: bool)
 
 const MARKER := preload("res://scenes/exclamation_marker.tscn")
+const AssetPaths := preload("res://scripts/asset_paths.gd")
 const WALK_SPEED := 3.2
 const SPRINT_SPEED := 5.6
 const MAX_SPRINT := 100.0
@@ -48,6 +49,16 @@ func _ready() -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	if not is_local:
 		camera.queue_free()
+	_apply_head_texture()
+
+func _apply_head_texture() -> void:
+	var texture: Texture2D = AssetPaths.try_load_texture(team)
+	if texture == null or head == null:
+		return
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = texture
+	mat.albedo_color = Color.WHITE
+	head.material_override = mat
 
 func _input(event: InputEvent) -> void:
 	if bot or not is_local or frozen:

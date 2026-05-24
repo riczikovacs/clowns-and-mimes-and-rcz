@@ -7,9 +7,13 @@ extends Control
 
 signal requested_screen(screen: String)
 
+const AssetPaths := preload("res://scripts/asset_paths.gd")
+
 const PHASE_1_TEXT := "CLOWNS AND MIMES"
 const PHASE_2_TEXT := "ON MISCELLANEOUS TOPOLOGICAL SPACES"
 const PHASE_3_TEXT := "... IN THE DARK!"
+
+var theme_player: AudioStreamPlayer
 
 @onready var line1: Label = $Lines/Line1
 @onready var line2: Label = $Lines/Line2
@@ -27,7 +31,20 @@ func _ready() -> void:
 	clown_panel.modulate.a = 0.0
 	mime_panel.modulate.a = 0.0
 	enter_button.pressed.connect(_on_enter)
+	_start_theme()
 	_animate()
+
+func _start_theme() -> void:
+	var stream: AudioStream = AssetPaths.try_load_audio(AssetPaths.THEME_AUDIO)
+	if stream == null:
+		return
+	theme_player = AudioStreamPlayer.new()
+	theme_player.bus = "Music"
+	theme_player.stream = stream
+	if stream is AudioStreamOggVorbis:
+		(stream as AudioStreamOggVorbis).loop = true
+	add_child(theme_player)
+	theme_player.play()
 
 func _animate() -> void:
 	var t := create_tween()
