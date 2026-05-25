@@ -74,7 +74,13 @@ func set_sprint(value: float) -> void:
 	sprint_bar.value = value
 
 func set_countdown_seconds(seconds: float) -> void:
-	if seconds < 0.0:
+	# Negative is the explicit "no countdown" sentinel. Zero (or sub-millisecond
+	# values) lands here whenever the active phase has no turn-end time set
+	# yet - during the filling phase before the match starts, or for one frame
+	# at the boundary where a turn just expired and the next phase update is
+	# in flight. In both cases rendering "0" looks like a stuck countdown, so
+	# blank the label instead.
+	if seconds <= 0.001:
 		countdown_label.text = ""
 		return
 	if seconds >= 60.0:
@@ -135,6 +141,18 @@ func flash_battle_cry(text: String, team: String) -> void:
 	var tw := create_tween()
 	tw.tween_property(battle_cry_label, "modulate:a", 1.0, 0.15)
 	tw.tween_interval(1.2)
+	tw.tween_property(battle_cry_label, "modulate:a", 0.0, 0.6)
+
+## Reuses the centered BattleCry label to flash "DISPERSE!" in white when the
+## free-roam phase begins, so the call to spread out is as visible as a
+## turn battle cry. The small left-side event log gets no entry for this
+## phase - the centered banner is the entire announcement.
+func flash_disperse() -> void:
+	battle_cry_label.text = "DISPERSE!"
+	battle_cry_label.modulate = Color(1.0, 1.0, 1.0, 1.0)
+	var tw := create_tween()
+	tw.tween_property(battle_cry_label, "modulate:a", 1.0, 0.15)
+	tw.tween_interval(1.6)
 	tw.tween_property(battle_cry_label, "modulate:a", 0.0, 0.6)
 
 func show_end(victory: bool) -> void:

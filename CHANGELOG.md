@@ -6,6 +6,25 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-25
+
+Lobby and HUD polish: typing a code that no host created no longer drops the player into a fake offline room, free-roam announces itself as a centered DISPERSE banner, and the various wire-flavoured strings that leaked into the UI are now sentences a player can read.
+
+### Added
+
+- Centered "DISPERSE!" banner flashes when the free-roam phase begins, reusing the same label the team battle cries use. Replaces the small left-side event-log line that previously read `free_roam` verbatim.
+
+### Changed
+
+- Lobby code input on the main menu rewrites to upper-case as the player types. The matchmaker uppercased the URL anyway; the field now matches.
+- Website copy: the rules list says "Thirty seconds to wander before tags count" to match the actual free-roam window (previously said sixty).
+- Matchmaker client error strings are now player-readable sentences. 400 maps to topology / request hints, 404 to "Lobby not found", 429 to a rate-limit notice, 5xx to a server-down notice. Internal labels like `matchmaker returned 404` no longer leak into the lobby status line.
+
+### Fixed
+
+- Typing an arbitrary lobby code no longer falls through to offline-vs-bots. The matchmaker's 404 routes through a new `lobby_not_found` signal that the lobby surfaces as a hard error and bounces back to the menu, instead of pretending the room existed. Matchmaker-unreachable and 5xx failures still fall back to offline play.
+- HUD countdown blanks the label when the active phase has no turn-end time (filling phase, or one frame at the boundary where a turn just expired). Previously rendered a stuck `0`.
+
 ## [0.3.0] - 2026-05-25
 
 Topology lineup rebuilt around the Möbius strip (rendered as its orientation double cover), with the sphere and double-torus surfaces removed. Spawn placement now rejects positions inside walls and inside other players.
