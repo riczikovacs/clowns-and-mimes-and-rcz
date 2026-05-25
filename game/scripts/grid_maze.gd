@@ -13,23 +13,13 @@ const DIR_NORTH := 1
 const DIR_WEST := 2
 const DIR_SOUTH := 3
 
-# Sphere cube-face layout. Six 4x6 mazes packed 3x2 fill the playfield. The
-# constants match backend/shared/src/gridMaze.ts so the TS server and the
-# GDScript client agree on every wall.
-const SPHERE_FACE_COLS := 3
-const SPHERE_FACE_ROWS := 2
-const SPHERE_FACE_CELLS_X := 4
-const SPHERE_FACE_CELLS_Z := 6
-const SPHERE_GRID_X := SPHERE_FACE_COLS * SPHERE_FACE_CELLS_X  # 12
-const SPHERE_GRID_Z := SPHERE_FACE_ROWS * SPHERE_FACE_CELLS_Z  # 12
-
 const TopologyScript := preload("res://scripts/topology/topology.gd")
 
 static func generate(seed_value: int, topology_name: String, grid_n: int = GRID_MAZE_N) -> Array:
-	if topology_name == "sphere":
-		return _generate_sphere(seed_value)
 	if topology_name == "klein":
 		return _generate_klein(seed_value, grid_n)
+	if topology_name == "mobius":
+		return _generate_mobius(seed_value)
 	var total: int = grid_n * grid_n
 	var visited := PackedByteArray()
 	visited.resize(total)
@@ -262,125 +252,152 @@ static func _emit_klein_expanded_walls(openings: PackedByteArray, grid_n: int) -
 				out.append({"ax": x0, "az": z, "bx": x1, "bz": z})
 	return out
 
-# Sphere wall list: six independent grid mazes laid out 3x2 in the playfield.
-# Each face is a 4x6 cell grid. Face boundaries carry no walls so a player
-# crossing a face edge wraps onto the adjacent face via the topology adapter.
-#
-# Faces are visited in a fixed order (row 0 col 0, row 0 col 1, row 0 col 2,
-# row 1 col 0, row 1 col 1, row 1 col 2) and share one LCG state, mirroring
-# backend/shared/src/gridMaze.ts::generateSphereGridWalls.
-#
-# TODO: this first cut uses torus-like wrapping between faces. Proper cube-net
-# edge rotations and per-face spawn zones are a follow-up.
-static func _generate_sphere(seed_value: int) -> Array:
-	var fcx: int = SPHERE_FACE_CELLS_X
-	var fcz: int = SPHERE_FACE_CELLS_Z
-	var face_total: int = fcx * fcz
-	var total_cells: int = SPHERE_GRID_X * SPHERE_GRID_Z
-	var openings := PackedByteArray()
-	openings.resize(total_cells)
-	var rng_state: int = seed_value & 0xFFFFFFFF
-	for fr in SPHERE_FACE_ROWS:
-		for fc in SPHERE_FACE_COLS:
-			var local_visited := PackedByteArray()
-			local_visited.resize(face_total)
-			var local_openings := PackedByteArray()
-			local_openings.resize(face_total)
-			rng_state = _lcg_next(rng_state)
-			var start: int = rng_state % face_total
-			local_visited[start] = 1
-			var stack: Array[int] = [start]
-			while not stack.is_empty():
-				var cur: int = stack[stack.size() - 1]
-				var candidates: Array = []
-				for dir in 4:
-					var nb: int = _sphere_local_neighbor(cur, dir, fcx, fcz)
-					if nb < 0:
-						continue
-					if local_visited[nb] != 0:
-						continue
-					candidates.append([dir, nb])
-				if candidates.is_empty():
-					stack.pop_back()
-					continue
-				rng_state = _lcg_next(rng_state)
-				var pick: Array = candidates[rng_state % candidates.size()]
-				var pick_dir: int = pick[0]
-				var pick_cell: int = pick[1]
-				local_openings[cur] = local_openings[cur] | (1 << pick_dir)
-				local_openings[pick_cell] = local_openings[pick_cell] | (1 << _opposite(pick_dir))
-				local_visited[pick_cell] = 1
-				stack.append(pick_cell)
-			# Per-face braid using the shared LCG state.
-			for cell in face_total:
-				if _popcount_nibble(local_openings[cell]) >= 2:
-					continue
-				var closed_neighbors: Array = []
-				for dir in 4:
-					if (local_openings[cell] & (1 << dir)) != 0:
-						continue
-					var nb: int = _sphere_local_neighbor(cell, dir, fcx, fcz)
-					if nb < 0:
-						continue
-					closed_neighbors.append([dir, nb])
-				if closed_neighbors.is_empty():
-					continue
-				rng_state = _lcg_next(rng_state)
-				var pick: Array = closed_neighbors[rng_state % closed_neighbors.size()]
-				var pick_dir: int = pick[0]
-				var pick_cell: int = pick[1]
-				local_openings[cell] = local_openings[cell] | (1 << pick_dir)
-				local_openings[pick_cell] = local_openings[pick_cell] | (1 << _opposite(pick_dir))
-			# Copy this face's openings into the 12x12 global packing.
-			for lr in fcz:
-				for lc in fcx:
-					var gc: int = fc * fcx + lc
-					var gr: int = fr * fcz + lr
-					openings[gc + gr * SPHERE_GRID_X] = local_openings[lc + lr * fcx]
-	return _emit_sphere_walls(openings)
+# Möbius strip maze rendered as the cylindrical double cover. Generates a
+# DFS spanning tree on the left half (cols 0..N-1) with x wrapping pure-
+# modular within the fundamental, then mirrors the openings across z to
+# fill the right half (cols N..2N-1). The Möbius "twist" lives in that
+# z-mirror; the wrap at the cover's x edge is plain modular so the seam
+# is butter-smooth. Mirrors backend/shared/src/gridMaze.ts.
+const MOBIUS_GRID_X := 2 * GRID_MAZE_N
+const MOBIUS_GRID_Z := GRID_MAZE_N
+const MOBIUS_HALF_X := 80.0
+const MOBIUS_HALF_Z := 20.0
 
-static func _sphere_local_neighbor(local_cell: int, dir: int, fcx: int, fcz: int) -> int:
-	var lc: int = local_cell % fcx
-	var lr: int = local_cell / fcx
-	var nc: int = lc
-	var nr: int = lr
+static func _mobius_fundamental_neighbor(cell: int, dir: int, fcols: int, rows: int) -> int:
+	# Möbius identification on the x-wrap: col fcols-1's east neighbour is
+	# col 0 at row (rows - 1 - r). z is hard-bounded. The mirrored right
+	# half of the cover only lines up at the seam if the fundamental DFS
+	# uses this flip; a plain cylinder wrap leaves mismatched openings at
+	# x = 0 in the cover and can disconnect the two halves.
+	var cc: int = cell % fcols
+	var cr: int = cell / fcols
+	var nc: int = cc
+	var nr: int = cr
 	if dir == DIR_EAST:
-		nc = lc + 1
+		nc = cc + 1
 	elif dir == DIR_WEST:
-		nc = lc - 1
+		nc = cc - 1
 	elif dir == DIR_NORTH:
-		nr = lr + 1
+		nr = cr + 1
 	elif dir == DIR_SOUTH:
-		nr = lr - 1
-	if nc < 0 or nc >= fcx:
+		nr = cr - 1
+	if nr < 0 or nr >= rows:
 		return -1
-	if nr < 0 or nr >= fcz:
-		return -1
-	return nc + nr * fcx
+	var flip_row: bool = false
+	if nc < 0 or nc >= fcols:
+		nc = posmod(nc, fcols)
+		flip_row = true
+	if flip_row:
+		nr = rows - 1 - nr
+	return nc + nr * fcols
 
-static func _emit_sphere_walls(openings: PackedByteArray) -> Array:
-	var cell: float = TopologyScript.WIDTH / float(SPHERE_GRID_X)
-	var half: float = TopologyScript.WIDTH / 2.0
-	var fcx: int = SPHERE_FACE_CELLS_X
-	var fcz: int = SPHERE_FACE_CELLS_Z
+static func _generate_mobius(seed_value: int) -> Array:
+	var cols: int = MOBIUS_GRID_X
+	var rows: int = MOBIUS_GRID_Z
+	var fcols: int = cols / 2
+	var total: int = cols * rows
+	var ftotal: int = fcols * rows
+	var cell_x: float = (2.0 * MOBIUS_HALF_X) / float(cols)
+	var cell_z: float = (2.0 * MOBIUS_HALF_Z) / float(rows)
+	var half_x: float = MOBIUS_HALF_X
+	var half_z: float = MOBIUS_HALF_Z
+
+	var rng_state: int = seed_value & 0xFFFFFFFF
+	var fundamental_visited := PackedByteArray()
+	fundamental_visited.resize(ftotal)
+	var fundamental_openings := PackedByteArray()
+	fundamental_openings.resize(ftotal)
+
+	rng_state = _lcg_next(rng_state)
+	var start: int = rng_state % ftotal
+	fundamental_visited[start] = 1
+	var stack: Array[int] = [start]
+	while not stack.is_empty():
+		var cur: int = stack[stack.size() - 1]
+		var candidates: Array = []
+		for dir in 4:
+			var nb: int = _mobius_fundamental_neighbor(cur, dir, fcols, rows)
+			if nb < 0:
+				continue
+			if fundamental_visited[nb] != 0:
+				continue
+			candidates.append([dir, nb])
+		if candidates.is_empty():
+			stack.pop_back()
+			continue
+		rng_state = _lcg_next(rng_state)
+		var pick: Array = candidates[rng_state % candidates.size()]
+		var pick_dir: int = pick[0]
+		var pick_cell: int = pick[1]
+		fundamental_openings[cur] = fundamental_openings[cur] | (1 << pick_dir)
+		fundamental_openings[pick_cell] = fundamental_openings[pick_cell] | (1 << _opposite(pick_dir))
+		fundamental_visited[pick_cell] = 1
+		stack.append(pick_cell)
+
+	# Braid dead ends in the fundamental half.
+	for cell in range(ftotal):
+		if _popcount_nibble(fundamental_openings[cell]) >= 2:
+			continue
+		var closed_neighbors: Array = []
+		for dir in 4:
+			if (fundamental_openings[cell] & (1 << dir)) != 0:
+				continue
+			var nb: int = _mobius_fundamental_neighbor(cell, dir, fcols, rows)
+			if nb < 0:
+				continue
+			closed_neighbors.append([dir, nb])
+		if closed_neighbors.is_empty():
+			continue
+		rng_state = _lcg_next(rng_state)
+		var pick: Array = closed_neighbors[rng_state % closed_neighbors.size()]
+		var pick_dir: int = pick[0]
+		var pick_cell: int = pick[1]
+		fundamental_openings[cell] = fundamental_openings[cell] | (1 << pick_dir)
+		fundamental_openings[pick_cell] = fundamental_openings[pick_cell] | (1 << _opposite(pick_dir))
+
+	# Expand to the double cover. Left half = fundamental; right half =
+	# z-mirror of fundamental (rows reversed, north/south openings swapped).
+	var openings := PackedByteArray()
+	openings.resize(total)
+	for r in range(rows):
+		for c in range(fcols):
+			openings[c + r * cols] = fundamental_openings[c + r * fcols]
+		for c in range(fcols):
+			var mirrored_r: int = rows - 1 - r
+			openings[c + fcols + mirrored_r * cols] = _swap_north_south(fundamental_openings[c + r * fcols])
+
+	# Emit walls. East seam (last col) skipped because it identifies via the
+	# wrap. North/south interior walls between cells. Hard top/bottom walls
+	# emitted at the end.
 	var out: Array = []
-	for r in SPHERE_GRID_Z:
-		for c in SPHERE_GRID_X:
-			var id: int = c + r * SPHERE_GRID_X
+	for r in range(rows):
+		for c in range(cols):
+			var id: int = c + r * cols
 			var east_closed: bool = (openings[id] & (1 << DIR_EAST)) == 0
 			var north_closed: bool = (openings[id] & (1 << DIR_NORTH)) == 0
-			var local_col: int = c % fcx
-			var local_row: int = r % fcz
-			var on_face_east_edge: bool = local_col == fcx - 1
-			var on_face_north_edge: bool = local_row == fcz - 1
-			if east_closed and not on_face_east_edge:
-				var x: float = (float(c + 1) * cell) - half
-				var z0: float = (float(r) * cell) - half
-				var z1: float = (float(r + 1) * cell) - half
-				out.append({"ax": x, "az": z0, "bx": x, "bz": z1})
-			if north_closed and not on_face_north_edge:
-				var z: float = (float(r + 1) * cell) - half
-				var x0: float = (float(c) * cell) - half
-				var x1: float = (float(c + 1) * cell) - half
+			var is_last_col: bool = c == cols - 1
+			var is_last_row: bool = r == rows - 1
+			if east_closed:
+				var z0: float = float(r) * cell_z - half_z
+				var z1: float = float(r + 1) * cell_z - half_z
+				if is_last_col:
+					# Cover seam: emit at both x = +halfX and x = -halfX so the
+					# player gets blocked approaching from either side
+					# (pathCrossesWall uses pre-wrap coordinates).
+					out.append({"ax": half_x, "az": z0, "bx": half_x, "bz": z1})
+					out.append({"ax": -half_x, "az": z0, "bx": -half_x, "bz": z1})
+				else:
+					var x: float = float(c + 1) * cell_x - half_x
+					out.append({"ax": x, "az": z0, "bx": x, "bz": z1})
+			if north_closed and not is_last_row:
+				var z: float = float(r + 1) * cell_z - half_z
+				var x0: float = float(c) * cell_x - half_x
+				var x1: float = float(c + 1) * cell_x - half_x
 				out.append({"ax": x0, "az": z, "bx": x1, "bz": z})
+	# Hard top and bottom boundary walls.
+	for c in range(cols):
+		var x0: float = float(c) * cell_x - half_x
+		var x1: float = float(c + 1) * cell_x - half_x
+		out.append({"ax": x0, "az": half_z, "bx": x1, "bz": half_z})
+		out.append({"ax": x0, "az": -half_z, "bx": x1, "bz": -half_z})
 	return out

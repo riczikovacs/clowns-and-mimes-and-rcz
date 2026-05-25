@@ -33,16 +33,6 @@ describe('wrapPosition', () => {
     expect(a.x).toBe(0);
     expect(a.z).toBe(-40);
   });
-
-  it('wraps both axes torus-like on sphere (cube-mapped first cut)', () => {
-    // First cut packs six cube faces 3x2 across the full WIDTH. A simple
-    // modular wrap matches the visual seam crossings; proper cube edge
-    // rotations are a follow-up.
-    const a = wrapPosition({ x: 60, z: 0 }, 'sphere', W);
-    expect(a.x).toBeCloseTo(-40, 6);
-    const b = wrapPosition({ x: 0, z: -60 }, 'sphere', W);
-    expect(b.z).toBeCloseTo(40, 6);
-  });
 });
 
 describe('topologyDistance', () => {

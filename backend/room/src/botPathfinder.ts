@@ -13,7 +13,8 @@
 
 import type { Topology, Vec2 } from '@cm/shared';
 import { pathCrossesWall, type WallSegment } from '@cm/shared/labyrinth';
-import { GRID_MAZE_N, SPHERE_GRID_X, SPHERE_GRID_Z } from '@cm/shared/gridMaze';
+import { GRID_MAZE_N, MOBIUS_GRID_X, MOBIUS_GRID_Z } from '@cm/shared/gridMaze';
+import { MOBIUS_HALF_X, MOBIUS_HALF_Z } from '@cm/shared/mobius';
 import { WORLD_WIDTH } from '@cm/shared/topology';
 
 interface GridShape {
@@ -24,7 +25,7 @@ interface GridShape {
   wrapX: boolean;
   wrapZ: boolean;
   // Klein: when crossing the x seam, the row index flips. The wrap on the z
-  // axis is plain modular. Sphere and torus do not flip.
+  // axis is plain modular. Torus does not flip.
   flipRowOnXWrap: boolean;
 }
 
@@ -138,11 +139,24 @@ export class BotPathfinder {
       for (let c = 0; c < cols; c += 1) {
         const cell = c + r * cols;
         let mask = 0;
+        const { cellX, cellZ } = this.shape;
+        const seamThreshold = 2 * Math.max(cellX, cellZ);
         for (let dir = 0; dir < 4; dir += 1) {
           const nb = this.neighborCell(c, r, dir);
           if (nb < 0) continue;
           const a = this.cellCenter(cell);
           const b = this.cellCenter(nb);
+          // Seam-crossing neighbours have their wall check skipped: the
+          // straight world line from a to b crosses the playfield
+          // interior (the long way around the wrap) and would falsely
+          // pick up walls between source and destination. Wrap seams
+          // are open by definition.
+          const dx = b.x - a.x;
+          const dz = b.z - a.z;
+          if (Math.abs(dx) > seamThreshold || Math.abs(dz) > seamThreshold) {
+            mask |= 1 << dir;
+            continue;
+          }
           if (!pathCrossesWall(walls, a.x, a.z, b.x, b.z)) {
             mask |= 1 << dir;
           }
@@ -272,20 +286,6 @@ export class BotPathfinder {
 }
 
 function gridShapeFor(topology: Topology): GridShape {
-  if (topology === 'sphere') {
-    return {
-      cols: SPHERE_GRID_X,
-      rows: SPHERE_GRID_Z,
-      cellX: WORLD_WIDTH / SPHERE_GRID_X,
-      cellZ: WORLD_WIDTH / SPHERE_GRID_Z,
-      // Sphere uses face-local mazes packed 3x2; the topology adapter wraps
-      // between faces with torus-like modular indexing for now (see
-      // wrapPosition's sphere branch). Mirror that here.
-      wrapX: true,
-      wrapZ: true,
-      flipRowOnXWrap: false,
-    };
-  }
   if (topology === 'klein') {
     // Klein's playfield is the double cover: 2N x N cells over a 2W x W
     // domain. The maze generator places the z-mirror of the fundamental in
@@ -299,6 +299,21 @@ function gridShapeFor(topology: Topology): GridShape {
       cellZ: WORLD_WIDTH / GRID_MAZE_N,
       wrapX: true,
       wrapZ: true,
+      flipRowOnXWrap: false,
+    };
+  }
+  if (topology === 'mobius') {
+    // Möbius strip cylindrical double cover. The right half of the maze
+    // is the z-mirror of the left, so the wrap is plain modular x with
+    // NO row flip - the flip is in the geometry, not in the wrap rule
+    // (same trick Klein uses). z is hard-bounded by top/bottom walls.
+    return {
+      cols: MOBIUS_GRID_X,
+      rows: MOBIUS_GRID_Z,
+      cellX: (2 * MOBIUS_HALF_X) / MOBIUS_GRID_X,
+      cellZ: (2 * MOBIUS_HALF_Z) / MOBIUS_GRID_Z,
+      wrapX: true,
+      wrapZ: false,
       flipRowOnXWrap: false,
     };
   }

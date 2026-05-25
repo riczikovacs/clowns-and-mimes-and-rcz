@@ -71,9 +71,7 @@ function chooseGapIndices(seed: number, ringIndex: number): Set<number> {
  *   - Plane: closed rectangle with boundary walls.
  *   - Torus and Klein: boundary walls skipped because the wrap folds both
  *     edges to the same line.
- *   - Sphere: six independent 4x6 face mazes packed 3x2 in the playfield;
- *     face boundaries are open so the topology wraps the player to the
- *     adjacent face.
+ *   - Möbius: cylindrical double cover with hard top/bottom walls.
  *
  * The concentric-ring layout is no longer dispatched anywhere but is kept in
  * the module (chooseGapIndices, RING_RADII, gapJitter) so a future variant
@@ -153,6 +151,19 @@ export function pathCrossesWall(
     ) {
       return true;
     }
+  }
+  return false;
+}
+
+/**
+ * True if a player whose collision disc is centered at (x, z) would
+ * overlap any wall in `walls`. Uses the same WALL_CLEARANCE the runtime
+ * collision test uses, so a spawn that passes this predicate is also a
+ * valid resting position.
+ */
+export function pointBlockedByWall(walls: readonly WallSegment[], x: number, z: number): boolean {
+  for (const w of walls) {
+    if (pointToSegmentDistance(x, z, w) < WALL_CLEARANCE) return true;
   }
   return false;
 }

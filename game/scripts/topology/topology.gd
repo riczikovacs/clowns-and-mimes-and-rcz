@@ -8,7 +8,7 @@ extends RefCounted
 
 const WIDTH := 80.0
 
-enum Kind { PLANE, TORUS, KLEIN, SPHERE }
+enum Kind { PLANE, TORUS, MOBIUS, KLEIN }
 
 ## Playfield half-extents along each axis. Overridden by Klein (which has a
 ## 2*WIDTH x WIDTH double-cover domain). Everything else stays square.
@@ -25,6 +25,16 @@ func kind() -> Kind:
 func wrap(position: Vector3) -> Vector3:
 	push_error("Topology.wrap must be overridden")
 	return position
+
+## Step-aware wrap. Möbius overrides this so its hard z-bounds reject the
+## step instead of silently clamping; other topologies discard prev and fall
+## through to wrap(next).
+##
+## `self.wrap(next)` is spelled with the receiver explicitly because
+## Godot's GDScript parser would otherwise resolve `wrap()` to the
+## built-in `wrap(value, min, max)` and complain about argument count.
+func wrap_step(_prev: Vector3, next: Vector3) -> Vector3:
+	return self.wrap(next)
 
 func distance(a: Vector3, b: Vector3) -> float:
 	push_error("Topology.distance must be overridden")

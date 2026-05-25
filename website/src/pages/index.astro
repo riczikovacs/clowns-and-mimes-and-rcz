@@ -22,7 +22,7 @@ const clownAvatar = `${base}avatars/clown.png`;
     <meta property="og:title" content={title} />
     <meta
       property="og:description"
-      content="Tag every opponent before they tag you. The arena might be a sphere, a torus, or a Klein bottle."
+      content="Tag every opponent before they tag you. The arena might be a torus, a Möbius strip, or a Klein bottle."
     />
     <link
       rel="icon"
@@ -409,6 +409,30 @@ const clownAvatar = `${base}avatars/clown.png`;
           <article class="topology">
             <svg viewBox="0 0 160 120" aria-hidden="true">
               <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
+                <!-- Möbius strip fundamental polygon: a wide rectangle whose
+                     left and right edges glue with a z-flip; top and bottom
+                     are hard walls (the strip's single boundary loop). -->
+                <rect x="20" y="36" width="120" height="48" rx="4" />
+                <!-- Top edge: solid thick line (hard wall, no arrows) -->
+                <line x1="20" y1="36" x2="140" y2="36" stroke-width="3.6" />
+                <!-- Bottom edge: solid thick line (hard wall, no arrows) -->
+                <line x1="20" y1="84" x2="140" y2="84" stroke-width="3.6" />
+                <!-- Left edge: double chevron pointing up (identification) -->
+                <line x1="20" y1="74" x2="20" y2="46" stroke-width="2.6" />
+                <path d="M 14 54 L 20 46 L 26 54" stroke-width="2.6" />
+                <path d="M 14 62 L 20 54 L 26 62" stroke-width="2.6" />
+                <!-- Right edge: double chevron pointing DOWN (opposite = the z-flip) -->
+                <line x1="140" y1="46" x2="140" y2="74" stroke-width="2.6" />
+                <path d="M 134 66 L 140 74 L 146 66" stroke-width="2.6" />
+                <path d="M 134 58 L 140 66 L 146 58" stroke-width="2.6" />
+              </g>
+            </svg>
+            <h3>Möbius strip</h3>
+            <p>One axis wraps with a flip. The other has hard walls at top and bottom.</p>
+          </article>
+          <article class="topology">
+            <svg viewBox="0 0 160 120" aria-hidden="true">
+              <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
                 <!-- Fundamental polygon: a square whose edges are identified -->
                 <rect x="36" y="22" width="88" height="76" rx="4" />
                 <!-- Top edge: single arrow rightward -->
@@ -428,21 +452,7 @@ const clownAvatar = `${base}avatars/clown.png`;
               </g>
             </svg>
             <h3>Klein bottle</h3>
-            <p>One axis wraps with a flip. The other wraps normally.</p>
-          </article>
-          <article class="topology">
-            <svg viewBox="0 0 160 120" aria-hidden="true">
-              <g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round">
-                <circle cx="80" cy="60" r="44" />
-                <ellipse cx="80" cy="60" rx="44" ry="14" />
-                <path d="M 80 16 Q 60 60 80 104" />
-                <path d="M 80 16 Q 100 60 80 104" />
-                <path d="M 80 16 Q 50 60 80 104" stroke-dasharray="4 4" opacity="0.6" />
-                <path d="M 80 16 Q 110 60 80 104" stroke-dasharray="4 4" opacity="0.6" />
-              </g>
-            </svg>
-            <h3>Sphere</h3>
-            <p>Walk a great circle. There is no edge to fall off.</p>
+            <p>Both axes wrap; the x seam flips the vertical.</p>
           </article>
         </div>
       </article>

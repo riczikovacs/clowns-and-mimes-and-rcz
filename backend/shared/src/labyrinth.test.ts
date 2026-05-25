@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { gapJitter, generateWalls, pathCrossesWall } from './labyrinth.ts';
-import { WORLD_WIDTH } from './topology.ts';
-import { SPHERE_FACE_COLS, SPHERE_FACE_ROWS } from './gridMaze.ts';
+import {
+  gapJitter,
+  generateWalls,
+  pathCrossesWall,
+  pointBlockedByWall,
+  PLAYER_RADIUS,
+  WALL_CLEARANCE,
+  type WallSegment,
+} from './labyrinth.ts';
 
 describe('gapJitter', () => {
   it('returns 0 or 1', () => {
@@ -54,15 +60,6 @@ describe('generateWalls', () => {
     expect(walls.length).toBeGreaterThan(50);
     expect(walls.length).toBeLessThan(300);
   });
-
-  it('produces axis-aligned walls on a sphere (cube-mapped grid)', () => {
-    const walls = generateWalls(7, 'sphere');
-    expect(walls.length).toBeGreaterThan(0);
-    for (const w of walls) {
-      const axisAligned = w.ax === w.bx || w.az === w.bz;
-      expect(axisAligned).toBe(true);
-    }
-  });
 });
 
 describe('pathCrossesWall', () => {
@@ -111,60 +108,6 @@ describe('generateWalls (plane, torus, klein use grid maze)', () => {
     expect(onBottom).toBe(true);
   });
 
-  it('omits walls on the sphere playfield boundary', () => {
-    const walls = generateWalls(7, 'sphere');
-    const half = 40;
-    const anyOnBoundary = walls.some(
-      (w) =>
-        (w.ax === -half && w.bx === -half) ||
-        (w.ax === half && w.bx === half) ||
-        (w.az === half && w.bz === half) ||
-        (w.az === -half && w.bz === -half),
-    );
-    expect(anyOnBoundary).toBe(false);
-  });
-
-  it('omits walls along the 3x2 sphere face boundaries', () => {
-    // A wall lying on the vertical seam between two face columns at
-    // x = -half + col * (WIDTH / 3) would visually bisect the maze. Same for
-    // the horizontal seam at z = 0. Both must stay open so the topology can
-    // wrap a player across them.
-    const walls = generateWalls(7, 'sphere');
-    const half = WORLD_WIDTH / 2;
-    const faceWidth = WORLD_WIDTH / SPHERE_FACE_COLS;
-    const faceHeight = WORLD_WIDTH / SPHERE_FACE_ROWS;
-    const verticalSeams: number[] = [];
-    for (let i = 1; i < SPHERE_FACE_COLS; i += 1) {
-      verticalSeams.push(-half + i * faceWidth);
-    }
-    const horizontalSeams: number[] = [];
-    for (let i = 1; i < SPHERE_FACE_ROWS; i += 1) {
-      horizontalSeams.push(-half + i * faceHeight);
-    }
-    for (const w of walls) {
-      const isVerticalSeg = w.ax === w.bx;
-      const isHorizontalSeg = w.az === w.bz;
-      if (isVerticalSeg) {
-        for (const seam of verticalSeams) {
-          expect(w.ax).not.toBeCloseTo(seam, 6);
-        }
-      }
-      if (isHorizontalSeg) {
-        for (const seam of horizontalSeams) {
-          expect(w.az).not.toBeCloseTo(seam, 6);
-        }
-      }
-    }
-  });
-
-  it('produces different walls for sphere and torus at the same seed', () => {
-    // Six independent face mazes traverse a different topology than one big
-    // wrapping grid, so the resulting wall lists must diverge.
-    const s = generateWalls(2026, 'sphere');
-    const t = generateWalls(2026, 'torus');
-    expect(s).not.toEqual(t);
-  });
-
   it('skips walls along the wrap seam', () => {
     // The grid maze should never put a wall on the outermost boundary of the
     // playfield, since the topology already collapses both edges to the same
@@ -194,5 +137,49 @@ describe('generateWalls (plane, torus, klein use grid maze)', () => {
     const t = generateWalls(2026, 'torus');
     const k = generateWalls(2026, 'klein');
     expect(t).not.toEqual(k);
+  });
+});
+
+describe('pointBlockedByWall', () => {
+  const wall: WallSegment = { ax: 0, az: -5, bx: 0, bz: 5 };
+
+  it('rejects a point sitting directly on the wall segment', () => {
+    expect(pointBlockedByWall([wall], 0, 0)).toBe(true);
+  });
+
+  it('rejects a point closer than WALL_CLEARANCE perpendicular to the wall', () => {
+    // A player disc just inside the clearance band overlaps the wall body.
+    expect(pointBlockedByWall([wall], WALL_CLEARANCE - 0.05, 0)).toBe(true);
+  });
+
+  it('accepts a point one player diameter clear of the wall', () => {
+    // Just outside clearance: collision system would not stop a player here,
+    // so neither should the spawn validator.
+    expect(pointBlockedByWall([wall], WALL_CLEARANCE + 0.05, 0)).toBe(false);
+    expect(pointBlockedByWall([wall], -WALL_CLEARANCE - 0.05, 0)).toBe(false);
+  });
+
+  it('accepts a point well past the wall endpoint', () => {
+    // The segment runs z in [-5, 5]; (0, 10) is past the end with no nearby
+    // wall body. Distance to segment is 5, much more than WALL_CLEARANCE.
+    expect(pointBlockedByWall([wall], 0, 10)).toBe(false);
+  });
+
+  it('returns false for an empty wall list', () => {
+    expect(pointBlockedByWall([], 0, 0)).toBe(false);
+  });
+
+  it('flags any spawn point inside a generated plane maze that sits on a wall', () => {
+    // For a plane maze, every emitted wall segment's midpoint should be
+    // flagged as blocked. Sanity check that the predicate sees real maze
+    // walls.
+    const walls = generateWalls(1, 'plane');
+    expect(walls.length).toBeGreaterThan(0);
+    for (const w of walls) {
+      const mx = (w.ax + w.bx) / 2;
+      const mz = (w.az + w.bz) / 2;
+      expect(pointBlockedByWall(walls, mx, mz)).toBe(true);
+    }
+    void PLAYER_RADIUS;
   });
 });

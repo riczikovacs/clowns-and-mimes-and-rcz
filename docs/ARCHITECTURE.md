@@ -26,7 +26,7 @@ This document is the single source of truth for how the project is built. Other 
 
 ## Goals and constraints
 
-The game is a 3D team tag game played by 4 to 16 players (humans and bots) on a labyrinth wrapped onto a finite plane, sphere, torus, or Klein bottle. Visibility is intentionally limited. Audio is sparse.
+The game is a 3D team tag game played by 4 to 16 players (humans and bots) on a labyrinth wrapped onto a finite plane, torus, Möbius strip, or Klein bottle. Visibility is intentionally limited. Audio is sparse.
 
 Hard constraints from the project brief:
 
@@ -145,16 +145,16 @@ classDiagram
   }
   Topology <|-- PlaneTopology
   Topology <|-- TorusTopology
+  Topology <|-- MobiusTopology
   Topology <|-- KleinTopology
-  Topology <|-- SphereTopology
 ```
 
-| Topology     | Wrap rule                                                   | Visual seam treatment                                                                                                                                             |
-| ------------ | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plane        | No wrap. Hard walls at edges.                               | None.                                                                                                                                                             |
-| Torus        | X wraps at width, Z wraps at depth.                         | Edge portals render the opposite side of the map.                                                                                                                 |
-| Klein bottle | X wraps with vertical flip, Z wraps with no flip.           | Edge portals on X axis render an inverted copy.                                                                                                                   |
-| Sphere       | Coordinates are spherical. Movement is along great circles. | Curved horizon shader simulates surface curvature. The labyrinth is projected via an octahedron-to-sphere mapping that keeps the symmetric ring structure intact. |
+| Topology     | Wrap rule                                                                     | Visual seam treatment                                                                                           |
+| ------------ | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Plane        | No wrap. Hard walls at edges.                                                 | None.                                                                                                           |
+| Torus        | X wraps at width, Z wraps at depth.                                           | Edge portals render the opposite side of the map.                                                               |
+| Möbius strip | X wraps with vertical flip, Z is bounded by hard walls. Single boundary loop. | Two edge portals (one per x-seam) render the strip mirrored across z, giving continuous geometry past the seam. |
+| Klein bottle | X wraps with vertical flip, Z wraps with no flip.                             | Edge portals on X axis render an inverted copy.                                                                 |
 
 Wrapping is enforced in `Topology.wrap` after every physics step. Both the GDScript and TypeScript implementations share the same canonical math; the GDScript build uses `fposmod` where TS uses the `((v + half) % width + width) % width` idiom, which produce identical values.
 
@@ -399,5 +399,4 @@ Initial release can ship without code signing on macOS by accepting Gatekeeper w
 ## Open questions
 
 - Final username generator dictionary needs curation. The first cut is a small adjective-and-noun list expanded in a follow-up.
-- Sphere rendering: the octahedron-to-sphere projection is the planned approach; if visual quality is poor an alternative cubemap projection is available.
 - Whether to support cosmetic skins beyond clown and mime in v1. Default answer: no, scope creep.

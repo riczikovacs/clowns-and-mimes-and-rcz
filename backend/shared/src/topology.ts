@@ -1,16 +1,23 @@
 import type { Topology, Vec2 } from './protocol.ts';
+import {
+  MOBIUS_HALF_X,
+  mobiusExtents,
+  stepAcrossMobiusBoundary,
+  wrapMobiusPoint,
+} from './mobius.ts';
 
 export const WORLD_WIDTH = 80;
 
 /**
- * Per-topology playfield extents in world units. Klein is the only topology
- * with a non-square playfield: the canonical x domain spans 2 * WORLD_WIDTH
- * so the bottle's z-orientation flip is walkable space (a mirrored right
- * half) instead of an instantaneous snap at the seam. All other topologies
- * are WORLD_WIDTH on each axis.
+ * Per-topology playfield extents in world units. Klein doubles x for its
+ * z-mirrored second half. Plane and torus are plain WxW squares.
  */
 export function topologyExtents(topology: Topology, width: number): { x: number; z: number } {
   if (topology === 'klein') return { x: 2 * width, z: width };
+  if (topology === 'mobius') {
+    void width;
+    return mobiusExtents();
+  }
   return { x: width, z: width };
 }
 
@@ -44,19 +51,31 @@ export function wrapPosition(p: Vec2, topology: Topology, width: number): Vec2 {
         z: wrap(p.z, width),
       };
     }
-    case 'sphere': {
-      // First-cut sphere uses torus-like modular wrap. The 3x2 face packing
-      // fills the full playfield, so modular wrap is the right primitive for
-      // crossing between faces - close enough to the eventual cube-mapped
-      // adjacency to feel right at small step sizes.
-      // TODO: proper cube-net edge adjacency with the right rotations when
-      // crossing a face boundary.
-      return {
-        x: wrap(p.x, width),
-        z: wrap(p.z, width),
-      };
+    case 'mobius': {
+      // Möbius strip: x past +/-MOBIUS_HALF_X identifies to the opposite
+      // edge with z negated; z stays clamped because top and bottom are
+      // hard walls.
+      void width;
+      return wrapMobiusPoint(p);
     }
   }
+}
+
+/**
+ * Step-aware wrap. Only Möbius needs the prev->candidate context (so the
+ * cylindrical double cover's hard z-bounds reject the step instead of
+ * silently clamping). Other topologies behave the same as wrapPosition.
+ */
+export function wrapPositionFromStep(
+  prev: Vec2,
+  candidate: Vec2,
+  topology: Topology,
+  width: number,
+): Vec2 {
+  if (topology === 'mobius') {
+    return stepAcrossMobiusBoundary(prev, candidate);
+  }
+  return wrapPosition(candidate, topology, width);
 }
 
 export function topologyDistance(a: Vec2, b: Vec2, topology: Topology, width: number): number {
@@ -75,13 +94,13 @@ export function topologyDistance(a: Vec2, b: Vec2, topology: Topology, width: nu
       const dz = wrappedDelta(a.z, b.z, width);
       return Math.hypot(dx, dz);
     }
-    case 'sphere': {
-      // First-cut sphere distance mirrors the wrap: torus-like shortest path
-      // across both axes.
-      // TODO: proper sphere geodesic distance across cube faces.
-      const dx = wrappedDelta(a.x, b.x, width);
-      const dz = wrappedDelta(a.z, b.z, width);
-      return Math.hypot(dx, dz);
+    case 'mobius': {
+      // Möbius cylindrical double cover: x wraps modular at 2*MOBIUS_HALF_X
+      // with no flip in the wrap (the flip is baked into the maze geometry).
+      // z is plain Euclidean (no wrap; hard top/bottom bounds).
+      void width;
+      const dx = wrappedDelta(a.x, b.x, 2 * MOBIUS_HALF_X);
+      return Math.hypot(dx, a.z - b.z);
     }
   }
 }
@@ -102,8 +121,7 @@ export function wrappedUnitDelta(from: Vec2, to: Vec2, topology: Topology, width
       dz = to.z - from.z;
       break;
     }
-    case 'torus':
-    case 'sphere': {
+    case 'torus': {
       dx = wrappedDelta(from.x, to.x, width);
       dz = wrappedDelta(from.z, to.z, width);
       break;
@@ -111,6 +129,15 @@ export function wrappedUnitDelta(from: Vec2, to: Vec2, topology: Topology, width
     case 'klein': {
       dx = wrappedDelta(from.x, to.x, 2 * width);
       dz = wrappedDelta(from.z, to.z, width);
+      break;
+    }
+    case 'mobius': {
+      // Cylindrical double cover: x is plain modular at 2*MOBIUS_HALF_X,
+      // z is plain Euclidean (no wrap). The Möbius "twist" is encoded
+      // in the maze geometry, not in the wrap direction.
+      void width;
+      dx = wrappedDelta(from.x, to.x, 2 * MOBIUS_HALF_X);
+      dz = to.z - from.z;
       break;
     }
   }

@@ -12,9 +12,7 @@
 //     visually double up).
 //   - Klein: same as torus but the x-seam flips the row index, matching the
 //     Klein topology adapter.
-//   - Sphere: 3x2 cube-face packing. Six independent 4x6 mazes share the
-//     playfield; face boundaries carry no walls so a crossing player wraps
-//     onto the adjacent face (see generateSphereGridWalls).
+//   - Möbius: cylindrical double cover (see generateMobiusGridWalls).
 //
 // Determinism: GDScript and TS must produce the same wall list for the same
 // (seed, topology, gridN). Both use the same 32-bit LCG and traverse
@@ -23,19 +21,9 @@
 import type { Topology } from './protocol.ts';
 import { WORLD_WIDTH } from './topology.ts';
 import type { WallSegment } from './labyrinth.ts';
+import { MOBIUS_HALF_X, MOBIUS_HALF_Z } from './mobius.ts';
 
 export const GRID_MAZE_N = 10;
-
-// Sphere cube-face layout. The playfield is packed as 3 face-columns by 2
-// face-rows. Each face is its own 4x6 grid of square cells; total grid is
-// therefore 12 wide x 12 tall, matching the per-face cell size (WORLD_WIDTH/12)
-// in both axes.
-export const SPHERE_FACE_COLS = 3;
-export const SPHERE_FACE_ROWS = 2;
-export const SPHERE_FACE_CELLS_X = 4;
-export const SPHERE_FACE_CELLS_Z = 6;
-export const SPHERE_GRID_X = SPHERE_FACE_COLS * SPHERE_FACE_CELLS_X; // 12
-export const SPHERE_GRID_Z = SPHERE_FACE_ROWS * SPHERE_FACE_CELLS_Z; // 12
 
 const DIR_EAST = 0;
 const DIR_NORTH = 1;
@@ -53,12 +41,13 @@ export function generateGridMazeWalls(
   topology: Topology,
   gridN: number = GRID_MAZE_N,
 ): WallSegment[] {
-  if (topology === 'sphere') {
-    return generateSphereGridWalls(seed);
-  }
   if (topology === 'klein') {
     return generateKleinGridWalls(seed, gridN);
   }
+  if (topology === 'mobius') {
+    return generateMobiusGridWalls(seed);
+  }
+  // Plane and torus share the rectangular grid path below.
   const total = gridN * gridN;
   const visited = new Uint8Array(total);
   // openings[cell] is a 4-bit mask: bit `dir` set means the wall in that
@@ -344,141 +333,156 @@ function emitKleinExpandedWalls(openings: Uint8Array, gridN: number): WallSegmen
 }
 
 /**
- * Sphere wall list: six independent grid mazes laid out 3x2 in the playfield.
- * Each face is a 4x6 cell grid. Face boundaries carry no walls so a player
- * crossing a face edge wraps onto the adjacent face via the topology adapter.
- *
- * The faces are visited in a fixed order (row 0 col 0, row 0 col 1, row 0
- * col 2, row 1 col 0, row 1 col 1, row 1 col 2) and share one LCG state, so
- * the generator is deterministic for a given seed and matches the GDScript
- * mirror in game/scripts/grid_maze.gd.
- *
- * TODO: this first cut uses torus-like wrapping between faces (modular 3x2),
- * which is not the rotated cube-net adjacency a true cube map needs. Proper
- * cube edge rotations and per-face spawn zones land in a follow-up.
+ * Möbius strip grid sizing for the cylindrical double cover. The cover
+ * is 2:1 in width:height; we use 2N x N cells (matching Klein). The
+ * right half (cols >= N) is the z-mirror of the left half (cols < N)
+ * so walking across the x = 0 fold sees continuous wall positions.
  */
-export function generateSphereGridWalls(seed: number): WallSegment[] {
-  const fcx = SPHERE_FACE_CELLS_X;
-  const fcz = SPHERE_FACE_CELLS_Z;
-  const faceTotal = fcx * fcz;
-  const totalCells = SPHERE_GRID_X * SPHERE_GRID_Z;
-  // One opening byte per cell in the full 12x12 packing. Each face writes into
-  // its own slice so the emit pass can iterate the full grid uniformly.
-  const openings = new Uint8Array(totalCells);
+export const MOBIUS_GRID_X = 2 * GRID_MAZE_N;
+export const MOBIUS_GRID_Z = GRID_MAZE_N;
+
+/**
+ * Möbius strip maze rendered as the cylindrical double cover.
+ *
+ * Step 1: DFS spanning tree on the FUNDAMENTAL Möbius (N cols x Z rows),
+ *   with the Möbius identification on the x-edges: col N-1's east neighbour
+ *   is col 0 at row (rows - 1 - r). z is hard-bounded.
+ * Step 2: Unfold into a 2N x Z cover. Left half is the fundamental
+ *   verbatim. Right half is the z-mirror of the fundamental: the cell
+ *   at cover (N + c, r) is the fundamental cell at (c, rows - 1 - r) with
+ *   north / south openings swapped.
+ *
+ * Why the fundamental must use the Möbius wrap, not a plain cylinder
+ * wrap: the cover at the middle seam (x = 0, cover cols N-1 / N) must
+ * have matching openings. Cover[N-1, r].east comes from fundamental
+ * [N-1, r].east; cover[N, r].west is taken from the mirror, which sets
+ * it to fundamental[0, rows - 1 - r].west. The DFS pairs those two
+ * exactly when col N-1's east-neighbour is treated as col 0 at row
+ * (rows - 1 - r). If the fundamental wraps as a cylinder instead, the
+ * openings at the cover seam land on mismatched rows: visible walls
+ * disagree with walkability and the two halves can come out as
+ * unreachable islands.
+ */
+export function generateMobiusGridWalls(seed: number): WallSegment[] {
+  const cols = MOBIUS_GRID_X;
+  const rows = MOBIUS_GRID_Z;
+  const fundamentalCols = cols / 2; // = N, the left-half count
+  const total = cols * rows;
+  const cellX = (2 * MOBIUS_HALF_X) / cols;
+  const cellZ = (2 * MOBIUS_HALF_Z) / rows;
+  const halfX = MOBIUS_HALF_X;
+  const halfZ = MOBIUS_HALF_Z;
 
   let rng = (seed | 0) >>> 0;
-  const next = (): number => {
+  const nextRand = (): number => {
     rng = ((Math.imul(rng, 1664525) >>> 0) + 1013904223) >>> 0;
     return rng;
   };
 
-  const localNeighbor = (localCell: number, dir: number): Neighbor | null => {
-    const lc = localCell % fcx;
-    const lr = Math.floor(localCell / fcx);
-    let nc = lc;
-    let nr = lr;
-    if (dir === DIR_EAST) nc = lc + 1;
-    else if (dir === DIR_WEST) nc = lc - 1;
-    else if (dir === DIR_NORTH) nr = lr + 1;
-    else if (dir === DIR_SOUTH) nr = lr - 1;
-    if (nc < 0 || nc >= fcx) return null;
-    if (nr < 0 || nr >= fcz) return null;
-    return { cell: nc + nr * fcx, dir, crossesSeam: false };
+  const fundamentalNeighbor = (cell: number, dir: number): { cell: number; dir: number } | null => {
+    const cc = cell % fundamentalCols;
+    const cr = Math.floor(cell / fundamentalCols);
+    let nc = cc;
+    let nr = cr;
+    if (dir === DIR_EAST) nc = cc + 1;
+    else if (dir === DIR_WEST) nc = cc - 1;
+    else if (dir === DIR_NORTH) nr = cr + 1;
+    else if (dir === DIR_SOUTH) nr = cr - 1;
+    if (nr < 0 || nr >= rows) return null;
+    let flipRow = false;
+    if (nc < 0 || nc >= fundamentalCols) {
+      nc = ((nc % fundamentalCols) + fundamentalCols) % fundamentalCols;
+      flipRow = true;
+    }
+    if (flipRow) nr = rows - 1 - nr;
+    return { cell: nc + nr * fundamentalCols, dir };
   };
+  const fundamentalOpenings = new Uint8Array(fundamentalCols * rows);
+  const fundamentalVisited = new Uint8Array(fundamentalCols * rows);
+  const start = nextRand() % (fundamentalCols * rows);
+  fundamentalVisited[start] = 1;
+  const stack: number[] = [start];
+  while (stack.length > 0) {
+    const cur = stack[stack.length - 1]!;
+    const candidates: { cell: number; dir: number }[] = [];
+    for (let dir = 0; dir < 4; dir += 1) {
+      const nb = fundamentalNeighbor(cur, dir);
+      if (nb === null) continue;
+      if (fundamentalVisited[nb.cell]) continue;
+      candidates.push(nb);
+    }
+    if (candidates.length === 0) {
+      stack.pop();
+      continue;
+    }
+    const pick = candidates[nextRand() % candidates.length]!;
+    fundamentalOpenings[cur] |= 1 << pick.dir;
+    fundamentalOpenings[pick.cell] |= 1 << oppositeDir(pick.dir);
+    fundamentalVisited[pick.cell] = 1;
+    stack.push(pick.cell);
+  }
+  for (let cell = 0; cell < fundamentalCols * rows; cell += 1) {
+    if (popCountNibble(fundamentalOpenings[cell]!) >= 2) continue;
+    const closed: { dir: number; cell: number }[] = [];
+    for (let dir = 0; dir < 4; dir += 1) {
+      if ((fundamentalOpenings[cell]! & (1 << dir)) !== 0) continue;
+      const nb = fundamentalNeighbor(cell, dir);
+      if (nb === null) continue;
+      closed.push({ dir, cell: nb.cell });
+    }
+    if (closed.length === 0) continue;
+    const pick = closed[nextRand() % closed.length]!;
+    fundamentalOpenings[cell] |= 1 << pick.dir;
+    fundamentalOpenings[pick.cell] |= 1 << oppositeDir(pick.dir);
+  }
 
-  // Iterate faces in the documented fixed order so GDScript and TS agree.
-  for (let fr = 0; fr < SPHERE_FACE_ROWS; fr += 1) {
-    for (let fc = 0; fc < SPHERE_FACE_COLS; fc += 1) {
-      const localVisited = new Uint8Array(faceTotal);
-      const localOpenings = new Uint8Array(faceTotal);
-
-      const start = next() % faceTotal;
-      localVisited[start] = 1;
-      const stack: number[] = [start];
-      while (stack.length > 0) {
-        const cur = stack[stack.length - 1]!;
-        const candidates: Neighbor[] = [];
-        for (let dir = 0; dir < 4; dir += 1) {
-          const nb = localNeighbor(cur, dir);
-          if (nb === null) continue;
-          if (localVisited[nb.cell]) continue;
-          candidates.push(nb);
-        }
-        if (candidates.length === 0) {
-          stack.pop();
-          continue;
-        }
-        const pick = candidates[next() % candidates.length]!;
-        localOpenings[cur] |= 1 << pick.dir;
-        localOpenings[pick.cell] |= 1 << oppositeDir(pick.dir);
-        localVisited[pick.cell] = 1;
-        stack.push(pick.cell);
-      }
-
-      // Braid this face. Walks the local grid, knocks down one closed wall
-      // per dead-end cell. The same shared LCG state advances through every
-      // face's braid pass.
-      for (let cell = 0; cell < faceTotal; cell += 1) {
-        if (popCountNibble(localOpenings[cell]!) >= 2) continue;
-        const closedNeighbors: { dir: number; cell: number }[] = [];
-        for (let dir = 0; dir < 4; dir += 1) {
-          if ((localOpenings[cell]! & (1 << dir)) !== 0) continue;
-          const nb = localNeighbor(cell, dir);
-          if (nb === null) continue;
-          closedNeighbors.push({ dir, cell: nb.cell });
-        }
-        if (closedNeighbors.length === 0) continue;
-        const pick = closedNeighbors[next() % closedNeighbors.length]!;
-        localOpenings[cell] |= 1 << pick.dir;
-        localOpenings[pick.cell] |= 1 << oppositeDir(pick.dir);
-      }
-
-      // Copy this face's openings into the global packing. Cell (lc, lr) in
-      // face (fc, fr) lives at global column fc*fcx+lc, row fr*fcz+lr.
-      for (let lr = 0; lr < fcz; lr += 1) {
-        for (let lc = 0; lc < fcx; lc += 1) {
-          const gc = fc * fcx + lc;
-          const gr = fr * fcz + lr;
-          openings[gc + gr * SPHERE_GRID_X] = localOpenings[lc + lr * fcx]!;
-        }
-      }
+  const openings = new Uint8Array(total);
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < fundamentalCols; c += 1) {
+      openings[c + r * cols] = fundamentalOpenings[c + r * fundamentalCols]!;
+      const mirroredR = rows - 1 - r;
+      const fundOpening = fundamentalOpenings[c + r * fundamentalCols]!;
+      openings[c + fundamentalCols + mirroredR * cols] = swapNorthSouth(fundOpening);
     }
   }
 
-  return emitSphereWalls(openings);
-}
-
-function emitSphereWalls(openings: Uint8Array): WallSegment[] {
-  const cell = WORLD_WIDTH / SPHERE_GRID_X;
-  const half = WORLD_WIDTH / 2;
-  const fcx = SPHERE_FACE_CELLS_X;
-  const fcz = SPHERE_FACE_CELLS_Z;
+  // Interior walls + the outer cover seam at x = +-halfX. The cover
+  // seam is one logical edge but lives at both ends of the cover, so
+  // when col 2N-1's east is closed we emit a wall at x = halfX and a
+  // mirror at x = -halfX so collision blocks the player approaching
+  // from either side (pathCrossesWall tests pre-wrap coordinates).
   const out: WallSegment[] = [];
-  for (let r = 0; r < SPHERE_GRID_Z; r += 1) {
-    for (let c = 0; c < SPHERE_GRID_X; c += 1) {
-      const id = c + r * SPHERE_GRID_X;
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      const id = c + r * cols;
       const eastClosed = (openings[id]! & (1 << DIR_EAST)) === 0;
       const northClosed = (openings[id]! & (1 << DIR_NORTH)) === 0;
-      // A face's east edge sits at local column index fcx-1. The wall east of
-      // that cell is the face boundary, so it gets dropped. Same idea for the
-      // north edge at local row fcz-1.
-      const localCol = c % fcx;
-      const localRow = r % fcz;
-      const onFaceEastEdge = localCol === fcx - 1;
-      const onFaceNorthEdge = localRow === fcz - 1;
-      if (eastClosed && !onFaceEastEdge) {
-        const x = (c + 1) * cell - half;
-        const z0 = r * cell - half;
-        const z1 = (r + 1) * cell - half;
-        out.push({ ax: x, az: z0, bx: x, bz: z1 });
+      const isLastCol = c === cols - 1;
+      const isLastRow = r === rows - 1;
+      if (eastClosed) {
+        const z0 = r * cellZ - halfZ;
+        const z1 = (r + 1) * cellZ - halfZ;
+        if (isLastCol) {
+          out.push({ ax: halfX, az: z0, bx: halfX, bz: z1 });
+          out.push({ ax: -halfX, az: z0, bx: -halfX, bz: z1 });
+        } else {
+          const x = (c + 1) * cellX - halfX;
+          out.push({ ax: x, az: z0, bx: x, bz: z1 });
+        }
       }
-      if (northClosed && !onFaceNorthEdge) {
-        const z = (r + 1) * cell - half;
-        const x0 = c * cell - half;
-        const x1 = (c + 1) * cell - half;
+      if (northClosed && !isLastRow) {
+        const z = (r + 1) * cellZ - halfZ;
+        const x0 = c * cellX - halfX;
+        const x1 = (c + 1) * cellX - halfX;
         out.push({ ax: x0, az: z, bx: x1, bz: z });
       }
     }
+  }
+  for (let c = 0; c < cols; c += 1) {
+    const x0 = c * cellX - halfX;
+    const x1 = (c + 1) * cellX - halfX;
+    out.push({ ax: x0, az: halfZ, bx: x1, bz: halfZ });
+    out.push({ ax: x0, az: -halfZ, bx: x1, bz: -halfZ });
   }
   return out;
 }
