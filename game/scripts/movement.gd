@@ -27,6 +27,14 @@ const WALL_CLEARANCE := WALL_HALF_THICKNESS + PLAYER_RADIUS
 
 const TopologyScript := preload("res://scripts/topology/topology.gd")
 
+## Diagnostic: log to stdout whenever the player asked to move but the
+## tick produced no displacement. Throttled to one print per ~500ms so a
+## held key against a wall doesn't spam the console. Flip to false (or
+## remove the gated block below) once the sphere stuck behaviour is
+## understood.
+const DEBUG_STUCK := true
+static var _last_stuck_log_msec: int = 0
+
 ## One server tick of humanoid movement. Returns
 ##   {"position": Vector2(x, z), "sprint_energy": float}
 ## position uses the (x, z) plane (matching the server's Vec2); the caller is
@@ -69,11 +77,16 @@ static func step(
 		Vector2(pos.x, pos.y + sign(dz) * speed * dt),
 	]
 	var next_pos: Vector2 = pos
+	var candidate_outcomes: Array = []  # diagnostic only
 	for c in candidates:
 		var candidate: Vector2 = c
 		if candidate.x == pos.x and candidate.y == pos.y:
+			if DEBUG_STUCK:
+				candidate_outcomes.append("zero")
 			continue
 		if walls.size() > 0 and path_crosses_wall(walls, pos.x, pos.y, candidate.x, candidate.y):
+			if DEBUG_STUCK:
+				candidate_outcomes.append("wall@(%.2f,%.2f)" % [candidate.x, candidate.y])
 			continue
 		# Player-on-player collision is server-authoritative. During the
 		# client predict step we cannot know every other body's position at
@@ -85,7 +98,16 @@ static func step(
 			Vector3(candidate.x, 0.0, candidate.y),
 		)
 		next_pos = Vector2(wrapped3.x, wrapped3.z)
+		if DEBUG_STUCK:
+			candidate_outcomes.append("ok->(%.2f,%.2f)" % [next_pos.x, next_pos.y])
 		break
+	if DEBUG_STUCK and move_len > 0.0 and next_pos == pos:
+		var now_msec: int = Time.get_ticks_msec()
+		if now_msec - _last_stuck_log_msec >= 500:
+			_last_stuck_log_msec = now_msec
+			print("[stuck] pos=(%.2f, %.2f) move=(%.2f, %.2f) dt=%.3f speed=%.2f candidates=%s topology=%s" % [
+				pos.x, pos.y, move.x, move.y, dt, speed, str(candidate_outcomes), topology.name()
+			])
 
 	var drained: bool = want_sprint and move_len > 0.0
 	var energy_delta: float = (-SPRINT_DRAIN_PER_S if drained else SPRINT_REGEN_PER_S) * dt

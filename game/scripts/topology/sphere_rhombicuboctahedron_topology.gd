@@ -192,6 +192,12 @@ func flips_z_on_x_wrap() -> bool:
 func is_walkable(face: String) -> bool:
 	return ADJACENCY.has(face)
 
+## Diagnostic: log every face-crossing or wall-block decision to stdout
+## while we chase the sphere stuck-at-open-area report. These fire only
+## when the candidate leaves the current face, so cost is at most one
+## print per few seconds of walking. Flip to false to silence.
+const DEBUG_WRAP_STEP := true
+
 func wrap_step(prev: Vector3, next: Vector3) -> Vector3:
 	# If the candidate landed on a walkable face, no identification needed.
 	if _face_at(next.x, next.z) != "":
@@ -200,6 +206,8 @@ func wrap_step(prev: Vector3, next: Vector3) -> Vector3:
 	# the previous face was crossed and apply the polyhedron's identification.
 	var from_face := _face_at(prev.x, prev.z)
 	if from_face == "":
+		if DEBUG_WRAP_STEP:
+			print("[wrap_step] prev off-face prev=(%.2f, %.2f) next=(%.2f, %.2f) -> pass-through" % [prev.x, prev.z, next.x, next.z])
 		return next
 	var rect := _face_world_rect(from_face)
 	var past_east: float = next.x - rect[1]
@@ -216,6 +224,8 @@ func wrap_step(prev: Vector3, next: Vector3) -> Vector3:
 	if past_south > 0.0:
 		exits.append(['south', past_south])
 	if exits.is_empty():
+		if DEBUG_WRAP_STEP:
+			print("[wrap_step] no exit edge from=%s prev=(%.2f, %.2f) next=(%.2f, %.2f) rect=%s" % [from_face, prev.x, prev.z, next.x, next.z, str(rect)])
 		return next
 	exits.sort_custom(func(a, b): return a[1] > b[1])
 	var edge: String = exits[0][0]
@@ -229,10 +239,14 @@ func wrap_step(prev: Vector3, next: Vector3) -> Vector3:
 	t = clampf(t, 0.0, 1.0)
 	var face_adj: Variant = ADJACENCY.get(from_face)
 	if face_adj == null:
+		if DEBUG_WRAP_STEP:
+			print("[wrap_step] no face_adj for %s -> blocked prev=(%.2f, %.2f) next=(%.2f, %.2f)" % [from_face, prev.x, prev.z, next.x, next.z])
 		return prev
 	var adj: Variant = face_adj.get(edge)
 	if adj == null:
 		# Edge leads to a wall (triangle barrier). Block the step.
+		if DEBUG_WRAP_STEP:
+			print("[wrap_step] %s.%s -> triangle wall, blocked prev=(%.2f, %.2f) next=(%.2f, %.2f) t=%.3f overshoot=%.3f" % [from_face, edge, prev.x, prev.z, next.x, next.z, t, overshoot])
 		return prev
 	var to_face: String = adj[0]
 	var to_edge: String = adj[1]
@@ -267,7 +281,16 @@ func wrap_step(prev: Vector3, next: Vector3) -> Vector3:
 	var dest_rect := _face_world_rect(to_face)
 	var world_x: float = dest_rect[0] + u * FACE_SIDE
 	var world_z: float = dest_rect[2] + v * FACE_SIDE
-	return Vector3(world_x, next.y, world_z)
+	var result := Vector3(world_x, next.y, world_z)
+	if DEBUG_WRAP_STEP:
+		var landed := _face_at(result.x, result.z)
+		var land_tag: String = landed if landed == to_face else ("MISMATCH:" + landed)
+		print("[wrap_step] %s.%s(t=%.3f) -> %s.%s(t=%.3f rot=%d) prev=(%.2f, %.2f) next=(%.2f, %.2f) result=(%.2f, %.2f) overshoot=%.3f inward=%.3f landed=%s" % [
+			from_face, edge, t, to_face, to_edge, t_dest, rotation,
+			prev.x, prev.z, next.x, next.z, result.x, result.z,
+			overshoot, inward, land_tag
+		])
+	return result
 
 func wrap(position: Vector3) -> Vector3:
 	# Recovery path: if the point sits on a walkable face, return unchanged.
