@@ -2,9 +2,28 @@
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses [Semantic Versioning](https://semver.org/).
 
-When cutting a release: rename the `[Unreleased]` heading below to the version being tagged (for example `[0.1.0]`) and open a fresh `[Unreleased]` block above it. The release workflow extracts the section under the heading that matches the tag (e.g. tag `v0.1.0` -> heading `[0.1.0]`) and uses it as the GitHub Release body.
+When cutting a release: rename the `[Unreleased]` heading below to the version being tagged (for example `[0.1.0]`) and open a fresh `[Unreleased]` block above it. Bump `application/config/version` in `game/project.godot` to match the tag so the client's update-check popup compares against the right local version. The release workflow extracts the section under the heading that matches the tag (e.g. tag `v0.1.0` -> heading `[0.1.0]`) and uses it as the GitHub Release body.
 
 ## [Unreleased]
+
+## [0.3.2] - 2026-05-25
+
+Network smoothness: the local player no longer micro-stutters relative to walls while moving, remote players glide instead of hitching when packets arrive late, and the menu now warns the player when a newer build is out.
+
+### Added
+
+- Update-available popup. On main-menu launch, the client checks the GitHub releases API and pops a small modal with a "Get latest" button that opens the website when the local build is older than the latest published release. Network failures are swallowed silently so offline players are not nagged. Same modal in a hard "Update required" variant fires in the arena if the server closes the connection with `version_mismatch` (PROTOCOL_VERSION bump).
+- `application/config/version` now travels with the build (`game/project.godot`). `VersionCheck.local_version()` reads it via `ProjectSettings`. The release recipe at the top of this file reminds the next release cut to bump this in lockstep with the tag.
+
+### Changed
+
+- Local player prediction is now bound to the 60 Hz physics tick (matches what the server applies) and `_process` interpolates the rendered body transform between consecutive ticks for high-refresh-rate smoothness. Previously the prediction advanced every render frame (often 144 Hz) but inputs were queued only at the 60 Hz physics tick, which meant any server delta arriving mid-tick replayed one input short of the prediction and popped the body backward by ~5 cm.
+- Remote players now render from a fixed-delay snapshot buffer (the Quake / Source "entity interpolation" pattern). Each body is rendered at `now - 100 ms` and interpolated within the buffered history between the two snapshots that bracket that virtual time. Network jitter inside the 100 ms window is invisible. Topology seam crossings (and large server teleports) are detected by step length and snap rather than lerping through the playfield.
+- Reconciliation no longer hard-snaps: when the server's authoritative position diverges from the local prediction by a few cm, the next render frames lerp from the current visual position to the corrected target across one tick window, turning a visible pop into a smooth slide.
+
+### Removed
+
+- Playtest-era diagnostics that had outlived their purpose: `[contact-no-fire]`, `[tag-rejected]`, `[unfreeze-rejected]` stdout prints and their throttling state.
 
 ## [0.3.1] - 2026-05-25
 
