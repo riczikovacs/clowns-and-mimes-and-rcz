@@ -6,6 +6,20 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-25
+
+Reliability + polish: mid-game disconnects are no longer instant boots to the menu, and the update-available popup has a fixed footprint.
+
+### Added
+
+- Periodic 5 s WebSocket keepalive ping from the arena. `room_client.send_ping()` has been a no-op exported method for a while; nothing called it, so idle players had no traffic on the socket and were the first to get retired by Cloudflare's Durable Object lifecycle. The arena now pings on a 5 s accumulator while online so the connection stays warm.
+- Reconnect ladder on transient WebSocket drops. When the server-side socket dies (TLS fatal alert, DO migration, brief ISP blip) the arena now shows a centered "Reconnecting..." banner and tries to re-open the WS at 0.5 s, 1.5 s, and 3.0 s offsets before giving up. Most transient drops resolve in that window and the player never sees a menu bounce. If all three attempts fail, a small popup offers "Reconnect" or "Back to menu" instead of force-routing the player out.
+
+### Changed
+
+- Update-available popup (both the soft main-menu variant and the hard `version_mismatch` variant in the arena) is now non-resizable. Previously the modal had a draggable corner that left an empty stretched region below the buttons.
+- `room_client.connect_to` and `disconnect_from` clear the internal send queue. Without this, a reconnect would flush stale enqueued inputs from the previous session as soon as the new socket opened.
+
 ## [0.3.2] - 2026-05-25
 
 Network smoothness: the local player no longer micro-stutters relative to walls while moving, remote players glide instead of hitching when packets arrive late, and the menu now warns the player when a newer build is out.
