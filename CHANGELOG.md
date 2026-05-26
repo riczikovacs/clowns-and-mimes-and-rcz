@@ -6,6 +6,15 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-05-26
+
+Main menu polish: the Join action lives next to the code field instead of in a separate button, and the field accepts Enter / Return as a submit.
+
+### Changed
+
+- The vertical button stack on the main menu drops the standalone "Enter a code" entry. The code row now reads as "Code: [field] [Join]", which keeps the action sited next to its input and frees one slot in the button column.
+- Pressing Enter / Return inside the code field submits the same way clicking Join does. The 4-character minimum guard still applies; the Enter path and the Join-button path reach the same handler.
+
 ## [0.3.5] - 2026-05-26
 
 Network smoothness + a significant bot AI overhaul. Mid-game movement no longer steps backward, and bots play more like opponents than wall-bumping shapes: they break off chases when they lose sight of you, investigate where they last saw you, route around walls when fleeing, explore the map deliberately instead of pacing, and turn at a reactive pace.
