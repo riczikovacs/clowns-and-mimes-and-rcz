@@ -6,6 +6,28 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-05-26
+
+Network smoothness + a significant bot AI overhaul. Mid-game movement no longer steps backward, and bots play more like opponents than wall-bumping shapes: they break off chases when they lose sight of you, investigate where they last saw you, route around walls when fleeing, explore the map deliberately instead of pacing, and turn at a reactive pace.
+
+### Added
+
+- Per-player input queue on the server. Inputs now drain one-per-tick from a small ring buffer (cap 4) instead of the old "latest input wins" map. Network jitter that previously bunched two inputs into the same socket-read window had the server silently drop the earlier one and the rendered body popped back by one tick of motion on the next reconciliation. Now every input is applied exactly once, in order.
+- Line-of-sight gate on bot vision. Bots can no longer "see" enemies through walls. `pathCrossesWall` is checked between the bot and each candidate target before chase or flee fires.
+- Last-known-position investigation. When a target the bot was chasing ducks behind cover, the bot routes toward where it last saw them for up to 3 s before giving up. Re-sighting during the window resumes the chase seamlessly; window expiry returns the bot to patrol. Investigation is suppressed during the bot's defending turn so a fleeing bot does not walk back into the threat.
+- Patrol exploration memory. Each bot remembers the last 6 patrol points it committed to and rejects new candidates within 10 m of any of them, so wandering bots no longer pace between two spots.
+
+### Changed
+
+- Flee now routes through the BFS pathfinder. A synthetic flee target is projected along the away-vector and the pathfinder finds the best corridor route, so bots evade through gaps instead of bee-lining into the closest corner.
+- Patrol movement also routes through BFS, matching chase / rescue / flee / investigate. A patrol target on the far side of a wall is approached through corridors instead of grinding straight into the geometry.
+- Patrol candidate filter rejects points inside a wall's clearance band. Bots no longer pick targets that sit inside a wall.
+- Bot heading agility tuned: direction smoothing dropped to 0.5 (was 0.7) and the body-yaw cap raised to 9 rad/s (was 5). A 90 degree turn now clears in ~175 ms instead of ~310 ms.
+
+### Fixed
+
+- "No-progress" detector for bots. The slide-fallback was happy to report `moved = true` whenever any axis succeeded, even when the bot was grinding x-only into a horizontal wall every tick. If the world-space distance covered in 800 ms stays below 0.5 m, the bot now picks a fresh patrol point, drops its engaged target, and resets direction smoothing so the new heading takes effect immediately.
+
 ## [0.3.4] - 2026-05-26
 
 Movement fix: the body can no longer get permanently pinned at the edge of a wall.
