@@ -6,6 +6,14 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-05-26
+
+Movement fix: the body can no longer get permanently pinned at the edge of a wall.
+
+### Fixed
+
+- `pathCrossesWall` (and its `path_crosses_wall` GDScript mirror) no longer rejects every move when the body has ended up just inside the WALL*CLEARANCE band (~5 cm short of clearance). The old logic checked both the start and end positions against clearance, so a single fast tick whose end landed at distance 0.55 m from a wall left the body unable to slide along the wall or even move away from it. The new logic still blocks segment intersections and any move whose end is \_deeper* than the start, but accepts parallel slides and escape moves so a pinned body can recover. Regression test exercises the four cases (parallel, away, deeper, tunnel-through).
+
 ## [0.3.3] - 2026-05-25
 
 Reliability + polish: mid-game disconnects are no longer instant boots to the menu, and the update-available popup has a fixed footprint.
