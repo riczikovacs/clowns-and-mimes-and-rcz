@@ -6,6 +6,26 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-26
+
+Hosting + joining is a real flow now: the host sees who joins their lobby in real time and clicks Start when everyone is ready, rather than dropping into the arena alone while friends trickle in. Latecomers who try to join a code that has already started see a clean "match in progress" message instead of stumbling into the running match. New Settings menu accessible from the main menu and the in-game pause overlay - toggle the theme music, sound effects, and a light-mode arena palette. Team assignment is balanced at match start so all the humans don't end up on the same side. Local-player movement is smoother after a fix to client-side reconciliation that was producing periodic visible snaps.
+
+### Added
+
+- Live roster on the lobby screen. As friends join the host's code, their names appear under the lobby code in real time. Status text changes per role: the host sees the Start button with a "share the code" hint, joiners see "Waiting for the host to start," and open-strangers lobbies show "Finding more players..."
+- Host-only Start button. Hosted lobbies wait in a `filling` phase until the host explicitly starts the match, instead of auto-starting on the second human or a 3 s timer. Open / strangers lobbies keep their auto-start behavior.
+- Settings panel with three toggles (mute theme music, mute sound effects, light mode). Reachable from a gear icon in the top-right of the main menu and from a Settings entry in the in-game pause overlay. Choices persist across launches via `user://settings.cfg`. Light mode swaps the arena to a daylight palette (blue sky, brighter ambient, lighter fog) and applies live during a match.
+- Mid-match join rejection. Joining a code whose match has already started shows a "Match in progress" popup that bounces the player back to the menu, closing the leave-and-rejoin path that was being used to reset the turn timer.
+
+### Changed
+
+- Humans are rebalanced 50/50 across teams at match start, so playtest configurations where all five humans landed on the same team can no longer happen.
+- Lobby owns the WebSocket connection now (via a new `NetClient` autoload) and hands it off to the arena on transition, so reconciliation state and the initial snapshot survive the scene swap.
+
+### Fixed
+
+- Local-player movement was visibly choppy: reconciliation was re-anchoring the prediction lerp's start point to the body's rendered position on every server delta, even when there was no actual correction to apply. The body fell progressively behind the prediction until the 1 m wrap-snap teleported it forward. Reconcile now only re-anchors when there is a real correction (>5 cm) to absorb.
+
 ## [0.3.6] - 2026-05-26
 
 Main menu polish: the Join action lives next to the code field instead of in a separate button, and the field accepts Enter / Return as a submit.
