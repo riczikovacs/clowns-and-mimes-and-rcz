@@ -6,6 +6,28 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-27
+
+Reliability pass on the WebSocket connection so a brief wifi drop no longer ends the match. The client now resumes the same player slot when it comes back, the server holds match state for a 15-second grace window, and the world pauses while every player is in that window so bots can't keep playing without you. Bots also no longer disappear when they cross a topology seam, and remote-body motion is smooth on high-refresh-rate monitors.
+
+### Added
+
+- Session-token reconnect. Each successful join is answered with a per-player resumption secret in the snapshot envelope; the client replays it on subsequent joins so a transient WebSocket drop rebinds to the existing player state instead of creating a fresh one. The server holds the slot open for 15 seconds before tearing it down for real, and the freeze-circumvention guard still rejects mid-match joins that arrive without a valid token.
+- World-tick pause while every human is in the grace window. The server's `simulate` body becomes a no-op until at least one player reconnects; the turn clock is shifted forward by the pause duration on the first resumed tick so a returning player doesn't find their turn already half-over.
+- Wrap-aware rendering for remote bodies (bots and other humans). On torus, Möbius, and Klein topologies, a body whose canonical position crosses a seam is rendered at the wrap-equivalent copy closest to the local camera instead of teleporting an entire world-width away.
+- "Match ended" popup when the reconnect ladder exhausts past the grace window.
+
+### Changed
+
+- Remote-body interpolation runs at render rate (`_process`) instead of the 60 Hz physics rate. Visible bot motion is now smooth on high-refresh-rate monitors; on 144 Hz the old `_physics_process` cadence produced a sawtooth stutter.
+- Outbound send queue on the client is now bounded at 64 entries with FIFO drop. Under a wedged transport (wifi yanked, TCP stalled) the queue can no longer grow unboundedly.
+- Disconnect detection is faster. The client now treats `ERR_OUT_OF_MEMORY` from `send_text` as a signal that the underlying transport is wedged and bails into the reconnect ladder within about a second, rather than waiting ~30 seconds for OS-level TCP keepalive to time out. With the new grace window, that means a quick wifi blip now reliably resumes the match.
+
+### Fixed
+
+- Turn countdown timer kept ticking down toward zero while the player was offline. Now frozen on the last displayed value until the reconnect succeeds and a fresh delta restores `turnEndsAt`.
+- `docs/ARCHITECTURE.md` audited end-to-end against the current code. Tick rate, scene paths, autoload list, labyrinth generator description, server-side bot scope, and the reconnect / session-resume mechanism were stale; the file now matches what ships.
+
 ## [0.4.0] - 2026-05-26
 
 Hosting + joining is a real flow now: the host sees who joins their lobby in real time and clicks Start when everyone is ready, rather than dropping into the arena alone while friends trickle in. Latecomers who try to join a code that has already started see a clean "match in progress" message instead of stumbling into the running match. New Settings menu accessible from the main menu and the in-game pause overlay - toggle the theme music, sound effects, and a light-mode arena palette. Team assignment is balanced at match start so all the humans don't end up on the same side. Local-player movement is smoother after a fix to client-side reconciliation that was producing periodic visible snaps.
