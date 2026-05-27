@@ -6,6 +6,15 @@ When cutting a release: rename the `[Unreleased]` heading below to the version b
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-27
+
+Quick follow-up to the v0.4.1 reconnect work: open-strangers matchmaking now correctly skips rooms that are already in a match.
+
+### Fixed
+
+- Picking "play strangers" twice in quick succession used to land the second player in a room whose match had already started, producing an immediate disconnect with close code 4003 ("match in progress"). The room now removes itself from the open-room pool the moment its phase leaves `filling`, so the matchmaker routes new strangers to a fresh room instead. The same room re-enters the pool once its match really ends.
+- Quitting to the menu (and quitting mid-reconnect) no longer logs a `SCRIPT ERROR` about a missing `send_input` call. Cosmetic in practice but cleaner.
+
 ## [0.4.1] - 2026-05-27
 
 Reliability pass on the WebSocket connection so a brief wifi drop no longer ends the match. The client now resumes the same player slot when it comes back, the server holds match state for a 15-second grace window, and the world pauses while every player is in that window so bots can't keep playing without you. Bots also no longer disappear when they cross a topology seam, and remote-body motion is smooth on high-refresh-rate monitors.
