@@ -139,7 +139,12 @@ var _reconnect_label: Label = null
 # ---------------------------------------------------------------------------
 
 func _ready() -> void:
+	# Group registration so the settings overlay can find the live arena
+	# scene and re-apply visual prefs (light mode) without waiting for
+	# the next match load.
+	add_to_group("arena")
 	online_mode = not GameState.server_url.is_empty()
+	apply_light_mode(Settings.light_mode)
 	_setup_menu()
 	hud.set_sprint(100.0)
 	# Leave the countdown label blank until the first phase update arrives;
@@ -161,6 +166,33 @@ func _setup_menu() -> void:
 	add_child(menu)
 	menu.resume_requested.connect(_on_menu_resume)
 	menu.quit_to_menu_requested.connect(_on_menu_quit)
+
+func apply_light_mode(enabled: bool) -> void:
+	# Re-skin the arena Environment + DirectionalLight to either the
+	# default moody dusk palette or a bright daylight palette. Called once
+	# on _ready and again whenever Settings.light_mode toggles while a
+	# match is in progress.
+	var env_node: WorldEnvironment = get_node_or_null("Environment")
+	var sun: DirectionalLight3D = get_node_or_null("DirectionalLight")
+	if env_node == null or env_node.environment == null or sun == null:
+		return
+	var env: Environment = env_node.environment
+	if enabled:
+		env.background_color = Color(0.55, 0.75, 0.95)
+		env.ambient_light_color = Color(0.95, 0.95, 0.92)
+		env.ambient_light_energy = 0.6
+		env.fog_light_color = Color(0.72, 0.82, 0.95)
+		env.fog_density = 0.006
+		sun.light_energy = 1.0
+		sun.light_color = Color(1.0, 0.98, 0.92)
+	else:
+		env.background_color = Color(0.04, 0.04, 0.05)
+		env.ambient_light_color = Color(0.45, 0.4, 0.55)
+		env.ambient_light_energy = 0.18
+		env.fog_light_color = Color(0.06, 0.05, 0.09)
+		env.fog_density = 0.018
+		sun.light_energy = 0.45
+		sun.light_color = Color(1.0, 1.0, 1.0)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_pause") and not menu.visible:
@@ -275,21 +307,47 @@ func _drive_offline_hud() -> void:
 
 func _start_online() -> void:
 	hud.append_log("Connecting...")
-	room_client = RoomClientScript.new()
-	add_child(room_client)
+	# The lobby already opened the WebSocket (and sent `join`) before
+	# transitioning into the arena. Re-use that RoomClient so reconciliation
+	# state and the initial snapshot survive the scene swap. Only fall back
+	# to opening a fresh connection if the lobby was somehow skipped (e.g.,
+	# direct boot into arena during development).
+	if NetClient.is_open():
+		room_client = NetClient.room_client
+	else:
+		# Fallback: lobby was skipped (development boot, or a future flow
+		# that goes straight to arena). Build a RoomClient and register it
+		# on NetClient so NetClient.close() can tear it down later.
+		room_client = RoomClientScript.new()
+		NetClient.add_child(room_client)
+		NetClient.room_client = room_client
+		room_client.connect_to(GameState.server_url)
 	room_client.connected.connect(_on_room_connected)
 	room_client.disconnected.connect(_on_room_disconnected)
 	room_client.snapshot_received.connect(_on_snapshot)
 	room_client.delta_received.connect(_on_delta)
 	room_client.event_received.connect(_on_room_event)
 	room_client.error_received.connect(_on_room_error)
-	room_client.connect_to(GameState.server_url)
+	# If the connection is already up (lobby path), the snapshot has already
+	# been delivered to the lobby and won't be re-emitted. NetClient caches
+	# it for us - replay it now so spawn / topology / labyrinth construction
+	# all happen as if we'd just received the message directly. The next
+	# delta arriving here will then progress state normally. If the lobby
+	# path was skipped (fallback above), wait for `connected` from
+	# connect_to() and `_on_room_connected` will send the join.
+	if room_client.is_connected_to_server():
+		_reconnect_attempt = 0
+		_reconnect_active = false
+		_hide_reconnect_banner()
+		if not NetClient.cached_snapshot.is_empty():
+			_on_snapshot(NetClient.cached_snapshot, NetClient.cached_you_are)
 
 func _on_room_connected() -> void:
 	GameState.ensure_username()
-	room_client.send_join(GameState.username)
-	# Reset the reconnect ladder so the next disconnect starts fresh from the
-	# shortest backoff window.
+	# Only fires on the fallback path where the arena opened the WS itself.
+	# In the normal lobby path the WS was already connected and join was
+	# sent before this scene loaded.
+	room_client.send_join(GameState.username, "", GameState.host_token)
 	_reconnect_attempt = 0
 	_reconnect_active = false
 	_hide_reconnect_banner()
@@ -464,16 +522,32 @@ func _reconcile_local_player(delta: Dictionary) -> void:
 		replayed_pos = step["position"]
 		local_sprint_energy = step["sprint_energy"]
 		local_sprinting = bool(step["sprinting"])
-	# Both sides run the same stepMovement, so the replayed position is
-	# usually within a few cm of the local prediction. Rather than snapping
-	# straight to it, set replayed_pos as the new "end of tick" target and
-	# anchor "start of tick" to where the body is rendered right now. The
-	# next render frames lerp from current visual position to the corrected
-	# target over one tick window, turning a 5 cm correction into a smooth
-	# slide instead of a visible pop.
-	_pred_prev_xz = Vector2(local_player.global_position.x, local_player.global_position.z)
+	# In steady state the predictor's _pred_current_xz already equals
+	# replayed_pos (both sides run the same stepMovement deterministically),
+	# so reconcile has nothing to correct. The previous design always
+	# re-anchored _pred_prev_xz to the body's rendered position and reset
+	# the lerp's tick-start anyway - and that anchoring was the actual bug.
+	# Because reconciles fire at 60 Hz and re-anchor prev to "where body is
+	# right now," any lag between the rendered position and _pred_current_xz
+	# was held in place across reconciles instead of being absorbed by the
+	# natural predict-tick cycle (which rotates _pred_current_xz into
+	# _pred_prev_xz every 16.7 ms). The lag compounded until it crossed the
+	# 1 m wrap-snap threshold in _advance_local_prediction and the body
+	# teleported forward visibly. That was the "humans choppy, bots smooth"
+	# regression after the NetClient autoload changed the per-frame process
+	# order (reconcile now runs before _advance_local_prediction).
+	#
+	# Only re-anchor when there is a real correction to absorb. A 5 cm
+	# threshold catches genuine drift (wall-slide divergence, wrap edge
+	# cases, server-side displacement) while letting the 60 Hz no-op
+	# reconciles pass through unobstructed. The threshold lives below
+	# the 1 m wrap-detection so big corrections still trip the wrap snap
+	# in _advance_local_prediction.
+	const CORRECTION_THRESHOLD := 0.05
+	if (replayed_pos - _pred_current_xz).length() > CORRECTION_THRESHOLD:
+		_pred_prev_xz = Vector2(local_player.global_position.x, local_player.global_position.z)
+		_pred_tick_start_t = Time.get_unix_time_from_system()
 	_pred_current_xz = replayed_pos
-	_pred_tick_start_t = Time.get_unix_time_from_system()
 	_pred_armed = true
 
 func _on_room_event(event: Dictionary) -> void:
@@ -888,8 +962,13 @@ func _play_stinger(victory: bool) -> void:
 
 func _on_back_to_menu() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	if room_client != null:
-		room_client.disconnect_from()
+	# The RoomClient is parented under the NetClient autoload now (so it
+	# could survive the lobby -> arena scene swap). Tearing down through
+	# NetClient.close() closes the socket AND frees the node; without that
+	# the next match would inherit a dead RoomClient from the previous
+	# session.
+	NetClient.close()
+	room_client = null
 	requested_screen.emit("menu")
 
 func _on_menu_resume() -> void:
