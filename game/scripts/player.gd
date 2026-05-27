@@ -79,6 +79,13 @@ const REMOTE_BUFFER_MAX_AGE_S := 0.5
 const REMOTE_WRAP_THRESHOLD := 1.0
 var _remote_buffer: Array[Dictionary] = []
 var _remote_armed: bool = false
+# Optional back-reference to the arena, set by arena._spawn_player. Used
+# by _to_camera_nearest_copy to render this body at the wrap-equivalent
+# position closest to the local camera (so a bot whose server position
+# just wrapped from z=+39 to z=-39 appears at z=+41 in the local
+# player's frame rather than visibly teleporting 80 m away). Null on
+# offline scenes / tests / the local body itself.
+var arena: Node = null
 
 func _ready() -> void:
 	if is_local and not bot:
@@ -133,17 +140,29 @@ func _input(event: InputEvent) -> void:
 		camera.rotate_x(-event.relative.y * LOOK_SENSITIVITY)
 		camera.rotation.x = clampf(camera.rotation.x, -1.2, 1.2)
 
+func _process(_delta: float) -> void:
+	# Remote-body position update at render rate. Previously this lived in
+	# _physics_process at 60 Hz, but the lerp is purely visual (no
+	# collision interaction, no move_and_slide), and on a high-refresh-rate
+	# monitor (144 Hz+) the body's rendered position would only refresh
+	# every second or third frame, producing a sawtooth stutter that read
+	# as "bots are jittery." Running it from _process closes the gap to
+	# the monitor's actual refresh rate. The local player has always had
+	# this treatment via arena.gd's _advance_local_prediction, which is
+	# why local motion is smooth and remote bodies stuttered.
+	if _remote_armed and not is_local and not frozen:
+		_drive_remote_interp()
+
 func _physics_process(delta: float) -> void:
 	if frozen:
 		velocity = Vector3.ZERO
 		move_and_slide()
 		_update_footsteps(0.0, false)
 		return
-	# Remote bodies (online humans and online bots) render from a fixed-delay
-	# snapshot buffer; see _drive_remote_interp for the math. Footstep audio
-	# rides the smoothed planar speed sampled in apply_remote_state.
+	# Remote bodies (online humans and online bots): position is owned by
+	# _process now (see comment there). This branch only drives the
+	# footstep audio at the physics rate.
 	if _remote_armed and not is_local:
-		_drive_remote_interp()
 		_update_footsteps(_remote_planar_speed, false)
 		return
 	if bot:
@@ -242,9 +261,14 @@ func apply_remote_state(pos: Vector3, yaw: float, is_frozen: bool, sprint: float
 	# First snapshot snaps the body directly to pos so it doesn't lerp from
 	# the origin. Subsequent snapshots feed the interpolation buffer.
 	if not _remote_armed:
-		global_position = pos
+		global_position = _to_camera_nearest_copy(pos)
 		rotation.y = yaw
 		_remote_armed = true
+	# Append the SERVER-authoritative position to the buffer. The lerp /
+	# snap in _drive_remote_interp will translate it into the camera-near
+	# copy before writing global_position, so the buffer always stores
+	# the canonical wrapped position (no need to refresh entries as the
+	# local camera moves).
 	_remote_buffer.append({"t": now_s, "pos": pos, "yaw": yaw})
 	# Drop entries older than the buffer window. Always keep at least two so
 	# _drive_remote_interp has a bracketing pair even when the player has not
@@ -290,7 +314,7 @@ func _drive_remote_interp() -> void:
 	if older_index < 0:
 		# render_t is before any buffered snapshot - hold at the oldest entry.
 		var oldest: Dictionary = _remote_buffer[0]
-		global_position = oldest["pos"]
+		global_position = _to_camera_nearest_copy(oldest["pos"])
 		rotation.y = float(oldest["yaw"])
 		return
 	if older_index >= _remote_buffer.size() - 1:
@@ -298,7 +322,7 @@ func _drive_remote_interp() -> void:
 		# blindly. A few late ticks of network delay will resolve themselves
 		# when the next snapshot arrives.
 		var latest: Dictionary = _remote_buffer[_remote_buffer.size() - 1]
-		global_position = latest["pos"]
+		global_position = _to_camera_nearest_copy(latest["pos"])
 		rotation.y = float(latest["yaw"])
 		return
 	var a: Dictionary = _remote_buffer[older_index]
@@ -306,15 +330,39 @@ func _drive_remote_interp() -> void:
 	var a_pos: Vector3 = a["pos"]
 	var b_pos: Vector3 = b["pos"]
 	if (b_pos - a_pos).length() > REMOTE_WRAP_THRESHOLD:
-		# Topology seam crossing or server teleport - snap to the newer side
-		# instead of lerping across the playfield.
-		global_position = b_pos
+		# Topology seam crossing or server teleport. The naive lerp would
+		# blend through the middle of the playfield, so skip it and render
+		# the body at the wrap-nearest copy of the newer position relative
+		# to the local camera - the body appears to continue past the seam
+		# instead of teleporting across the world.
+		global_position = _to_camera_nearest_copy(b_pos)
 		rotation.y = float(b["yaw"])
 		return
 	var span: float = float(b["t"]) - float(a["t"])
 	var alpha: float = 0.0 if span <= 1e-6 else clampf((render_t - float(a["t"])) / span, 0.0, 1.0)
-	global_position = a_pos.lerp(b_pos, alpha)
+	global_position = _to_camera_nearest_copy(a_pos.lerp(b_pos, alpha))
 	rotation.y = lerp_angle(float(a["yaw"]), float(b["yaw"]), alpha)
+
+# Translate a server-authoritative canonical position into the
+# wrap-equivalent copy nearest the local player's camera. On the plane
+# (or when arena/topology refs are not wired) this is a no-op. On wrap
+# topologies (torus, möbius, klein) this is what keeps a bot whose
+# canonical position just wrapped from z=+39 to z=-39 visible at z=+41
+# instead of teleporting 80 m away from the camera.
+func _to_camera_nearest_copy(canonical: Vector3) -> Vector3:
+	if arena == null:
+		return canonical
+	var topology: Object = arena.topology
+	if topology == null:
+		return canonical
+	var local: Node = arena.local_player
+	if local == null:
+		return canonical
+	var camera_pos: Vector3 = local.global_position
+	# topology.delta returns the shortest displacement from camera to
+	# canonical, wrapping each axis. Adding it back to camera_pos yields
+	# the canonical position in the camera's "current cover" frame.
+	return camera_pos + topology.delta(camera_pos, canonical)
 
 func _update_marker() -> void:
 	# Local player should not see their own marker even while frozen.

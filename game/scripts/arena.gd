@@ -577,7 +577,28 @@ func _on_room_error(code: String, message: String) -> void:
 	if code == "version_mismatch":
 		_show_version_mismatch_popup(message)
 		return
+	if code == "match_in_progress":
+		# Server rejected a reconnect because either the grace window
+		# expired or this client never had a valid sessionToken. Tell the
+		# player the match is gone instead of letting them sit in the
+		# reconnecting banner forever.
+		_show_match_in_progress_popup()
+		return
 	hud.append_log("Server error %s: %s" % [code, message])
+
+func _show_match_in_progress_popup() -> void:
+	# Stop the reconnect ladder so it doesn't keep retrying into the same
+	# rejection.
+	_reconnect_active = false
+	_hide_reconnect_banner()
+	var dialog := AcceptDialog.new()
+	dialog.title = "Match ended"
+	dialog.dialog_text = "You were disconnected for too long. Returning to the menu."
+	dialog.ok_button_text = "Back to menu"
+	dialog.unresizable = true
+	dialog.confirmed.connect(_on_back_to_menu)
+	add_child(dialog)
+	dialog.popup_centered()
 
 func _show_version_mismatch_popup(server_message: String) -> void:
 	# Hard variant of the main-menu update popup. The server has refused to
@@ -599,6 +620,15 @@ func _show_version_mismatch_popup(server_message: String) -> void:
 
 func _drive_online_hud() -> void:
 	if not snapshot_received:
+		return
+	if _reconnect_active:
+		# While the reconnect ladder is running, the server-side tick is
+		# paused (no active humans) so turnEndsAt is held in place, but
+		# the local clock keeps advancing. Without this gate the visible
+		# countdown would race toward zero during the disconnect and
+		# snap back up when the next delta arrives. Holding the last
+		# rendered value matches what the server is doing - the turn
+		# clock pauses with the world.
 		return
 	var now_ms: float = Time.get_unix_time_from_system() * 1000.0
 	var remaining_s: float = max(0.0, (turn_ends_at_ms - now_ms) / 1000.0)
@@ -791,6 +821,11 @@ func _spawn_player(id: String, p_name: String, team: String, is_bot: bool, is_lo
 	p.bot = is_bot
 	p.is_local = is_local
 	p.display_name = p_name
+	# Used by remote bodies' _to_camera_nearest_copy to render at the
+	# wrap-equivalent position nearest the local camera. Local body
+	# doesn't need it (its position is owned by the predictor) but
+	# setting it unconditionally keeps spawn symmetric.
+	p.arena = self
 	world.add_child(p)
 	# The grid maze places walls on cell boundaries every 8 units, including
 	# a wall right through the origin. Spawning at origin would drop players
