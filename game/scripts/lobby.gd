@@ -130,7 +130,15 @@ func _on_lobby_created(code: String, _room_id: String, ws_url: String, host_toke
 func _on_lobby_joined(_room_id: String, ws_url: String) -> void:
 	network_resolved = true
 	GameState.server_url = ws_url
-	status_label.text = "Connected. Waiting for the host to start."
+	# OPEN matches have no host - the room auto-fills with bots / other
+	# strangers and starts on its own once 2 humans or the bot-fill timer
+	# fires. The status text needs to match what the player is actually
+	# waiting on, otherwise OPEN players sit looking at a wrong "waiting
+	# for the host to start" message.
+	if GameState.mode == GameState.Mode.OPEN:
+		status_label.text = "Finding more players..."
+	else:
+		status_label.text = "Connected. Waiting for the host to start."
 	_open_ws(GameState.username, "")
 
 func _on_request_failed(reason: String) -> void:
@@ -265,12 +273,14 @@ func _finalize_and_transition() -> void:
 	transition_started = true
 	# Disconnect the lobby's signal handlers so the arena's own handlers
 	# can take over without firing twice. The RoomClient itself stays
-	# parented under NetClient.
+	# parented under NetClient. No artificial timer here - the server is
+	# already ticking by the time we hit this point; every additional ms
+	# the lobby holds the scene means a larger initial position jump for
+	# remote players when the arena rehydrates from the cached snapshot.
 	for entry in _room_signal_handlers:
 		if entry[0] != null and entry[0].is_connected(entry[1], entry[2]):
 			entry[0].disconnect(entry[1], entry[2])
 	_room_signal_handlers.clear()
-	await get_tree().create_timer(0.7).timeout
 	requested_screen.emit("arena")
 
 func _on_copy_pressed() -> void:

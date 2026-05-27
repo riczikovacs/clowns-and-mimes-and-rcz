@@ -36,14 +36,31 @@ func open(ws_url: String, username: String, host_token: String) -> void:
 	# since the join payload sends it. open() is the lobby's entry point so
 	# we can rely on these being set together.
 	room_client.connected.connect(func(): _on_connected(username, host_token), CONNECT_ONE_SHOT)
-	# Cache the snapshot/youAre as it arrives so the arena can rehydrate
-	# even though the lobby has already consumed the snapshot signal.
+	# Cache the snapshot/youAre AND every delta that arrives so the arena
+	# can rehydrate with current positions, not pre-match spawn coords.
+	# Without delta caching the arena would replay the snapshot from join
+	# time, then receive a delta with positions that have moved several
+	# ticks - remote players would visibly jump on entry.
 	room_client.snapshot_received.connect(_cache_snapshot)
+	room_client.delta_received.connect(_cache_delta)
 	room_client.connect_to(ws_url)
 
 func _cache_snapshot(snapshot: Dictionary, you_are: String) -> void:
 	cached_snapshot = snapshot
 	cached_you_are = you_are
+
+func _cache_delta(delta: Dictionary) -> void:
+	# Overlay the delta's mutable fields onto the cached snapshot. The
+	# room's `seed` and identity bits (youAre) only ship on the snapshot;
+	# everything else (players, phase, turnEndsAt) ships on every delta.
+	if cached_snapshot.is_empty():
+		return
+	if delta.has("players"):
+		cached_snapshot["players"] = delta["players"]
+	if delta.has("phase"):
+		cached_snapshot["phase"] = delta["phase"]
+	if delta.has("turnEndsAt"):
+		cached_snapshot["turnEndsAt"] = delta["turnEndsAt"]
 
 func _on_connected(username: String, host_token: String) -> void:
 	if room_client == null:
