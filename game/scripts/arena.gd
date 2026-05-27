@@ -275,34 +275,50 @@ func _drive_offline_hud() -> void:
 
 func _start_online() -> void:
 	hud.append_log("Connecting...")
-	room_client = RoomClientScript.new()
-	add_child(room_client)
+	# The lobby already opened the WebSocket (and sent `join`) before
+	# transitioning into the arena. Re-use that RoomClient so reconciliation
+	# state and the initial snapshot survive the scene swap. Only fall back
+	# to opening a fresh connection if the lobby was somehow skipped (e.g.,
+	# direct boot into arena during development).
+	if NetClient.is_open():
+		room_client = NetClient.room_client
+	else:
+		# Fallback: lobby was skipped (development boot, or a future flow
+		# that goes straight to arena). Build a RoomClient and register it
+		# on NetClient so NetClient.close() can tear it down later.
+		room_client = RoomClientScript.new()
+		NetClient.add_child(room_client)
+		NetClient.room_client = room_client
+		room_client.connect_to(GameState.server_url)
 	room_client.connected.connect(_on_room_connected)
 	room_client.disconnected.connect(_on_room_disconnected)
 	room_client.snapshot_received.connect(_on_snapshot)
 	room_client.delta_received.connect(_on_delta)
 	room_client.event_received.connect(_on_room_event)
 	room_client.error_received.connect(_on_room_error)
-	room_client.connect_to(GameState.server_url)
+	# If the connection is already up (lobby path), the snapshot has already
+	# been delivered to the lobby and won't be re-emitted. NetClient caches
+	# it for us - replay it now so spawn / topology / labyrinth construction
+	# all happen as if we'd just received the message directly. The next
+	# delta arriving here will then progress state normally. If the lobby
+	# path was skipped (fallback above), wait for `connected` from
+	# connect_to() and `_on_room_connected` will send the join.
+	if room_client.is_connected_to_server():
+		_reconnect_attempt = 0
+		_reconnect_active = false
+		_hide_reconnect_banner()
+		if not NetClient.cached_snapshot.is_empty():
+			_on_snapshot(NetClient.cached_snapshot, NetClient.cached_you_are)
 
 func _on_room_connected() -> void:
 	GameState.ensure_username()
-	# Pass the host token (empty for JOIN / OPEN modes, present only for the
-	# HOST mode lobby). Server uses it to mark this connection as the host
-	# and gate the start_match message to that one player.
+	# Only fires on the fallback path where the arena opened the WS itself.
+	# In the normal lobby path the WS was already connected and join was
+	# sent before this scene loaded.
 	room_client.send_join(GameState.username, "", GameState.host_token)
-	# Reset the reconnect ladder so the next disconnect starts fresh from the
-	# shortest backoff window.
 	_reconnect_attempt = 0
 	_reconnect_active = false
 	_hide_reconnect_banner()
-	# Backward-compat hook for the legacy "host clicks Start in the lobby
-	# and the arena starts solo" flow. Once the lobby UX in #102 lands the
-	# host will press Start in the lobby itself; until then, the host's
-	# arena _start_online immediately tells the room to begin so the
-	# server's hosted-room path does not strand the host in `filling`.
-	if GameState.mode == GameState.Mode.HOST and not GameState.host_token.is_empty():
-		room_client.send_start_match()
 
 func _on_room_disconnected(reason: String) -> void:
 	# Most disconnects in the wild are transient: Cloudflare Durable Object
@@ -914,8 +930,13 @@ func _play_stinger(victory: bool) -> void:
 
 func _on_back_to_menu() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	if room_client != null:
-		room_client.disconnect_from()
+	# The RoomClient is parented under the NetClient autoload now (so it
+	# could survive the lobby -> arena scene swap). Tearing down through
+	# NetClient.close() closes the socket AND frees the node; without that
+	# the next match would inherit a dead RoomClient from the previous
+	# session.
+	NetClient.close()
+	room_client = null
 	requested_screen.emit("menu")
 
 func _on_menu_resume() -> void:
