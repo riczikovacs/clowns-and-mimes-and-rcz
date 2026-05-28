@@ -5,7 +5,7 @@
 
 import type { PlayerState, Topology, Vec2, Vec3 } from './protocol.ts';
 import { pathCrossesWall, PLAYER_RADIUS, type WallSegment } from './labyrinth.ts';
-import { wrapPositionFromStep, wrappedDeltaVec } from './topology.ts';
+import { wrapPosition, wrapPositionFromStep, wrappedDeltaVec } from './topology.ts';
 import {
   BOUNCE_E_AERIAL,
   BOUNCE_E_GROUNDED,
@@ -131,7 +131,13 @@ export function stepMovement(
   const lossDz = attemptedDz - actualDz;
   const lossMag = Math.hypot(lossDx, lossDz);
   const attemptedMag = Math.hypot(attemptedDx, attemptedDz);
-  if (attemptedMag > 0 && lossMag / attemptedMag > 0.1) {
+  // Only apply rebound for a GENUINE wall-blocked partial motion. If the
+  // loss is larger than the attempted step the "loss" is actually a
+  // topology wrap (nextXZ is on the far side of a seam, so raw delta
+  // shows tens of meters even though the body really moved a few cm).
+  // Rebounding from a wrap would shove the body off the playfield -
+  // playtest flicker at seams was caused by exactly that.
+  if (attemptedMag > 0 && lossMag <= attemptedMag * 1.5 && lossMag / attemptedMag > 0.1) {
     const reboundX = -lossDx * BOUNCE_E_WALL;
     const reboundZ = -lossDz * BOUNCE_E_WALL;
     const candidateXZ: Vec2 = { x: nextXZ.x + reboundX, z: nextXZ.z + reboundZ };
@@ -322,10 +328,20 @@ export function resolvePlayerCollisions(
       const bBlocked =
         walls.length > 0 && pathCrossesWall(walls, b.position.x, b.position.z, bTargetX, bTargetZ);
       if (aShare > 0 && !aBlocked) {
-        a.position = { x: aTargetX, y: a.position.y, z: aTargetZ };
+        // Wrap after the push: a contact near a seam can shove the target
+        // position outside the canonical domain, and stepMovement on the
+        // next tick with zero input leaves an extended position untouched
+        // (its wrap only fires on a candidate move). The server then keeps
+        // broadcasting the extended coordinate forever, the client renders
+        // at body=extended one frame and body=wrap(extended) the next from
+        // _physics_process, and the camera flicks between two wrap-equivalent
+        // points - the "two angles" seam flicker.
+        const aWrapped = wrapPosition({ x: aTargetX, z: aTargetZ }, topology, worldWidth);
+        a.position = { x: aWrapped.x, y: a.position.y, z: aWrapped.z };
       }
       if (bShare > 0 && !bBlocked) {
-        b.position = { x: bTargetX, y: b.position.y, z: bTargetZ };
+        const bWrapped = wrapPosition({ x: bTargetX, z: bTargetZ }, topology, worldWidth);
+        b.position = { x: bWrapped.x, y: b.position.y, z: bWrapped.z };
       }
     }
   }

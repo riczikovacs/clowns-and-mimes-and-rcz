@@ -101,7 +101,19 @@ static func step(
 	var loss_dz: float = attempted_dz - actual_dz
 	var loss_mag: float = sqrt(loss_dx * loss_dx + loss_dz * loss_dz)
 	var attempted_mag: float = sqrt(attempted_dx * attempted_dx + attempted_dz * attempted_dz)
-	if attempted_mag > 0.0 and loss_mag / attempted_mag > 0.1:
+	# Skip rebound when the apparent "loss" is actually a topology wrap.
+	# A genuine partial-block loss is bounded by the attempted step
+	# (slide loses one axis, full block loses both); anything larger
+	# means next_pos jumped to the far side of a seam, and rebounding
+	# off that would shove the body off the playfield. The 1.5x slack
+	# handles float-precision near the boundary without false-allowing
+	# real wraps (which are at minimum WIDTH / 2 in magnitude, way past
+	# the 1.5x window for any plausible single-tick step).
+	if (
+		attempted_mag > 0.0
+		and loss_mag <= attempted_mag * 1.5
+		and loss_mag / attempted_mag > 0.1
+	):
 		var rebound_x: float = -loss_dx * PhysicsScript.BOUNCE_E_WALL
 		var rebound_z: float = -loss_dz * PhysicsScript.BOUNCE_E_WALL
 		var candidate_xz := Vector2(next_pos.x + rebound_x, next_pos.y + rebound_z)
@@ -123,6 +135,76 @@ static func step(
 		"sprint_energy": next_energy,
 		"sprinting": next_sprinting,
 	}
+
+## Push `self_xz` out of overlap with every entry in `others_xz`.
+## Mirrors the position-resolution half of
+## backend/shared/src/movement.ts::resolvePlayerCollisions so the client
+## predictor matches what the server's resolvePlayerCollisions will do.
+## Skips the closing-velocity impulse the server adds; that small
+## per-tick delta gets corrected by the next reconcile and is too
+## brittle to mirror precisely without per-other prev positions.
+##
+## Distance + push direction are computed via topology.delta so wrapping
+## seams don't flip the result. Without this the predictor briefly sees
+## bots on the opposite side of the world (until the next render frame
+## flips their _to_camera_nearest_copy rendered position), misses the
+## overlap entirely, and the server's bounce pass produces a visible
+## reconcile snap on every seam crossing. topology being null means the
+## caller is in offline / pre-build mode; fall back to raw Euclidean.
+##
+## Skips entries that are wall-blocked: a push into a wall would create
+## the same wall-clipping we are trying to avoid. The unblocked others
+## still resolve their share.
+static func resolve_overlap(
+	self_xz: Vector2,
+	others_xz: Array,
+	walls: Array,
+	topology = null,
+) -> Vector2:
+	var result := self_xz
+	for other in others_xz:
+		var other_xz: Vector2 = other
+		var diff_x: float
+		var diff_z: float
+		if topology != null:
+			var d: Vector3 = topology.delta(
+				Vector3(other_xz.x, 0.0, other_xz.y),
+				Vector3(result.x, 0.0, result.y),
+			)
+			diff_x = d.x
+			diff_z = d.z
+		else:
+			diff_x = result.x - other_xz.x
+			diff_z = result.y - other_xz.y
+		var dist: float = sqrt(diff_x * diff_x + diff_z * diff_z)
+		if dist >= 2.0 * PLAYER_RADIUS:
+			continue
+		var nx: float
+		var nz: float
+		if dist > 1e-6:
+			nx = diff_x / dist
+			nz = diff_z / dist
+		else:
+			# Zero-distance fallback. Pick a deterministic axis so both
+			# server and client agree.
+			nx = 1.0
+			nz = 0.0
+		var overlap: float = 2.0 * PLAYER_RADIUS - dist
+		var candidate := Vector2(result.x + nx * overlap, result.y + nz * overlap)
+		if walls.size() > 0 and path_crosses_wall(walls, result.x, result.y, candidate.x, candidate.y):
+			continue
+		result = candidate
+	# Wrap after the push so the result stays in the canonical domain. A
+	# contact near a seam can shove the position outside, and on the next
+	# predict tick with zero input stepMovement leaves an extended position
+	# unchanged - the predictor then renders at extended one frame and the
+	# _physics_process wrap snaps it back the next, producing the seam
+	# flicker. Mirrors the same wrap on the server in
+	# backend/shared/src/movement.ts::resolvePlayerCollisions.
+	if topology != null:
+		var wrapped: Vector3 = topology.wrap(Vector3(result.x, 0.0, result.y))
+		result = Vector2(wrapped.x, wrapped.z)
+	return result
 
 static func path_crosses_wall(walls: Array, ax: float, az: float, bx: float, bz: float) -> bool:
 	# Block moves that take the body closer to a wall than WALL_CLEARANCE
