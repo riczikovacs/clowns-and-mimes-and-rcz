@@ -3,12 +3,23 @@
  * Bump PROTOCOL_VERSION on every breaking change. The room rejects mismatches.
  */
 
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 
 export type Team = 'mime' | 'clown';
 
+// XZ planar vector. Inputs and topology helpers stay 2D because all
+// horizontal motion is planar; Y is handled separately by physics.ts.
 export interface Vec2 {
   x: number;
+  z: number;
+}
+
+// Full 3D position used for player state on the wire. Y is the vertical
+// axis; players hover at HOVER_HEIGHT and rise during a jump per the
+// arc in physics.ts.
+export interface Vec3 {
+  x: number;
+  y: number;
   z: number;
 }
 
@@ -18,6 +29,21 @@ export interface PlayerInput {
   move: Vec2;
   lookYaw: number;
   sprint: boolean;
+  // Rising-edge jump request. Set true on the input frame where the
+  // player pressed Space; false otherwise. The server triggers a new
+  // jump only when the player is not already jumping and is past the
+  // post-landing cooldown (see physics.ts::JUMP_COOLDOWN_S). Holding
+  // the key does NOT chain jumps; the client debounces to one true
+  // per press.
+  jump?: boolean;
+  // Wall-clock when the client emitted this input (Unix ms). Used as
+  // the jumpStartedAt timestamp on jump=true so the client predictor
+  // and the server agree on the arc start without a round-trip. The
+  // server clamps the value into the local Date.now() ± 500 ms window
+  // before stamping it, bounding client clock skew (and any nominal
+  // manipulation). Required on every input - movement is unaffected
+  // by the value, only jump trigger reads it.
+  nowMs: number;
   actionTag?: string;
   actionUnfreeze?: string;
 }
@@ -27,7 +53,7 @@ export interface PlayerState {
   name: string;
   team: Team;
   bot: boolean;
-  position: Vec2;
+  position: Vec3;
   yaw: number;
   frozen: boolean;
   sprintEnergy: number;
@@ -37,6 +63,13 @@ export interface PlayerState {
   // flip-flop between WALK_SPEED and SPRINT_SPEED tick-to-tick at the
   // 0-energy line, producing visible 20 Hz jitter.
   sprinting: boolean;
+  // Millisecond timestamp of the current jump's takeoff, or null if the
+  // player is not currently jumping. The server clears this back to null
+  // once the arc window expires. Y is a deterministic function of this
+  // field (see physics.ts::jumpArcY), so the wire carries the timestamp
+  // rather than the height itself; client and server both compute Y from
+  // the same source.
+  jumpStartedAt: number | null;
 }
 
 export type RoomPhase = 'filling' | 'locked' | 'free_roam' | 'turn_mime' | 'turn_clown' | 'ended';

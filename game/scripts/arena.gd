@@ -22,6 +22,7 @@ signal requested_screen(screen: String)
 const PLAYER := preload("res://scenes/player.tscn")
 const LABYRINTH := preload("res://scenes/labyrinth.tscn")
 const Movement := preload("res://scripts/movement.gd")
+const Physics := preload("res://scripts/physics.gd")
 const IN_GAME_MENU := preload("res://scenes/in_game_menu.tscn")
 const GameRulesScript := preload("res://scripts/game_rules.gd")
 const TopologyScript := preload("res://scripts/topology/topology.gd")
@@ -122,6 +123,18 @@ var _pred_current_xz: Vector2 = Vector2.ZERO
 var _pred_tick_start_t: float = 0.0
 var _pred_armed: bool = false
 
+# Predicted jumpStartedAt (Unix ms). -1 means "not in lockout"; matches
+# the GDScript null sentinel convention from Physics.step_jump. Y is a
+# deterministic function of this value + current wall-clock so the
+# render loop just samples Physics.jump_arc_y each frame; no parallel
+# lerp state is needed for Y. Reconcile pulls the server's authoritative
+# value out of each delta and replays pending inputs through step_jump
+# so the predictor stays in sync.
+var _pred_jump_started_at_ms: int = -1
+# Rising-edge tracker for the spacebar so holding the key sends exactly
+# one jump=true input per press. Reset when the player lets go.
+var _jump_was_held: bool = false
+
 # Shared.
 var local_player: Node = null
 var local_player_id: String = ""
@@ -133,6 +146,12 @@ var _ping_accumulator: float = 0.0
 var _reconnect_attempt: int = 0
 var _reconnect_active: bool = false
 var _reconnect_label: Label = null
+# Stashed so _show_reconnect_failed_popup can surface the original drop
+# reason in the side log once the ladder has actually given up. We hold
+# the log line back from _on_room_disconnected because the "Reconnecting..."
+# banner is the right transient UI; the log line was noisy and scary on
+# every CF edge blip the ladder absorbed invisibly.
+var _last_disconnect_reason: String = ""
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -211,11 +230,14 @@ func _process(delta: float) -> void:
 		# interpolates the body's visual transform between consecutive ticks
 		# so the motion stays smooth on high-refresh monitors without
 		# diverging from what the server applies.
-		if (
-			snapshot_received
-			and local_player != null
-			and not local_player.frozen
-		):
+		#
+		# Runs even when frozen so the frozen-mid-jump Y-descent lerp inside
+		# _advance_local_prediction can drop the body back to hover height.
+		# The XZ side is harmless while frozen because _stream_input zeros
+		# the input vectors (effective_move = Vector2.ZERO), so _pred_prev_xz
+		# and _pred_current_xz stop advancing - rendering re-applies the
+		# same XZ each frame.
+		if snapshot_received and local_player != null:
 			_advance_local_prediction(delta)
 	else:
 		_drive_offline_hud()
@@ -361,8 +383,12 @@ func _on_room_disconnected(reason: String) -> void:
 		return
 	_reconnect_active = true
 	_reconnect_attempt = 0
+	_last_disconnect_reason = reason
 	_show_reconnect_banner("Reconnecting...")
-	hud.append_log("Disconnected: %s" % reason)
+	# Hold off on the HUD log line. The "Reconnecting..." banner is enough
+	# transient feedback - most drops are CF edge / DO migration blips that
+	# the ladder absorbs invisibly. Only surface "Disconnected: <reason>"
+	# in the side log if the ladder gives up (see _show_reconnect_failed_popup).
 	_schedule_next_reconnect()
 
 func _schedule_next_reconnect() -> void:
@@ -414,6 +440,12 @@ func _hide_reconnect_banner() -> void:
 
 func _show_reconnect_failed_popup() -> void:
 	_hide_reconnect_banner()
+	# Surface the last disconnect reason now that the ladder gave up. Held
+	# back from _on_room_disconnected so the side log isn't spammed with
+	# "Disconnected: closed by peer: -1" on every transient blip that the
+	# ladder absorbs invisibly.
+	if _last_disconnect_reason != "":
+		hud.append_log("Disconnected: %s" % _last_disconnect_reason)
 	var dialog := AcceptDialog.new()
 	dialog.title = "Connection lost"
 	dialog.dialog_text = "Could not reach the server. Try again or back out to the main menu."
@@ -458,14 +490,20 @@ func _on_snapshot(snapshot: Dictionary, you_are: String) -> void:
 		if entry.get("id", "") == local_player_id and local_player != null:
 			var pos: Dictionary = entry.get("position", {"x": 0.0, "z": 0.0})
 			var spawn_xz := Vector2(float(pos.get("x", 0.0)), float(pos.get("z", 0.0)))
-			local_player.global_position = Vector3(
-				spawn_xz.x, local_player.global_position.y, spawn_xz.y
-			)
+			var spawn_y: float = float(pos.get("y", Physics.HOVER_HEIGHT))
+			local_player.global_position = Vector3(spawn_xz.x, spawn_y, spawn_xz.y)
 			local_sprint_energy = float(entry.get("sprintEnergy", 100.0))
 			local_sprinting = bool(entry.get("sprinting", false))
 			_pred_prev_xz = spawn_xz
 			_pred_current_xz = spawn_xz
 			_pred_tick_start_t = Time.get_unix_time_from_system()
+			# Pull the server's authoritative jumpStartedAt (null on the
+			# wire arrives as Variant null; treat as -1). On a fresh
+			# snapshot the player typically isn't mid-jump anyway.
+			var server_jump_started: Variant = entry.get("jumpStartedAt", null)
+			_pred_jump_started_at_ms = (
+				int(server_jump_started) if server_jump_started != null else -1
+			)
 			_pred_armed = true
 			break
 
@@ -500,7 +538,15 @@ func _reconcile_local_player(delta: Dictionary) -> void:
 	if server_local.is_empty():
 		return
 	var pos_dict: Dictionary = server_local.get("position", {"x": 0.0, "z": 0.0})
-	var server_pos := Vector2(float(pos_dict.get("x", 0.0)), float(pos_dict.get("z", 0.0)))
+	var server_pos_raw := Vector2(float(pos_dict.get("x", 0.0)), float(pos_dict.get("z", 0.0)))
+	# Defensive wrap: an older server build (or any future regression) that
+	# leaves a position outside the canonical domain would otherwise pin
+	# _pred_current_xz at an extended value forever, and the body would
+	# flick between extended-rendered and canonical-wrapped each frame.
+	# Server's resolvePlayerCollisions now wraps post-push but mirror the
+	# guard here so a stale build can't reproduce the seam flicker.
+	var server_pos_wrapped: Vector3 = topology.wrap(Vector3(server_pos_raw.x, 0.0, server_pos_raw.y))
+	var server_pos := Vector2(server_pos_wrapped.x, server_pos_wrapped.z)
 	# Drop inputs the server has applied; replay the rest.
 	while pending_inputs.size() > 0 and int(pending_inputs[0]["seq"]) <= ack_seq:
 		pending_inputs.pop_front()
@@ -509,6 +555,19 @@ func _reconcile_local_player(delta: Dictionary) -> void:
 	local_sprinting = bool(server_local.get("sprinting", local_sprinting))
 	var walls: Array = labyrinth.wall_endpoints()
 	var replayed_pos: Vector2 = server_pos
+	# Pull the server's authoritative jumpStartedAt and walk it forward
+	# through the same step_jump the server runs. Each pending input's
+	# now_ms was stamped at send time, so feeding the same value into
+	# Physics.step_jump produces the identical jumpStartedAt the server
+	# stored - the predicted arc Y will then match the authoritative Y
+	# at every tick.
+	var server_jump_started: Variant = server_local.get("jumpStartedAt", null)
+	var replayed_jump_started_at_ms: int = (
+		int(server_jump_started) if server_jump_started != null else -1
+	)
+	# Snapshot other bodies' XZ once outside the loop; they don't change
+	# during replay so the resolve step uses the same set every input.
+	var others_xz: Array = _collect_other_xz_positions()
 	for entry in pending_inputs:
 		var step := Movement.step(
 			{
@@ -525,8 +584,21 @@ func _reconcile_local_player(delta: Dictionary) -> void:
 			topology,
 		)
 		replayed_pos = step["position"]
+		# Resolve overlap so reconcile replays match the server's
+		# resolvePlayerCollisions pass. Without this, the reconcile loop
+		# can land on a position that's inside another body even though
+		# the server already pushed apart - one tick later the next
+		# reconcile snap creates the oscillation the camera flicker
+		# report describes.
+		replayed_pos = Movement.resolve_overlap(replayed_pos, others_xz, walls, topology)
 		local_sprint_energy = step["sprint_energy"]
 		local_sprinting = bool(step["sprinting"])
+		replayed_jump_started_at_ms = Physics.step_jump(
+			replayed_jump_started_at_ms,
+			bool(entry.get("jump", false)),
+			int(entry.get("now_ms", 0)),
+		)
+	_pred_jump_started_at_ms = replayed_jump_started_at_ms
 	# In steady state the predictor's _pred_current_xz already equals
 	# replayed_pos (both sides run the same stepMovement deterministically),
 	# so reconcile has nothing to correct. The previous design always
@@ -561,6 +633,19 @@ func _on_room_event(event: Dictionary) -> void:
 		"saved": _handle_saved(event)
 		"win": _handle_win(event)
 		"phase": _handle_phase_event(event.get("phase", ""), int(event.get("cryIndex", -1)))
+		"tag_result": _handle_tag_result(event)
+
+func _handle_tag_result(event: Dictionary) -> void:
+	if bool(event.get("ok", false)):
+		return
+	# Surface specific failure reasons to the HUD log so the player can
+	# tell why the tag missed. vertical_separation in particular is the
+	# new "they jumped out of reach" feedback after PR 2's tag-vertical
+	# gate; without a message the tag just silently fails and the
+	# player thinks the input dropped.
+	var reason: String = String(event.get("reason", ""))
+	if reason == "vertical_separation":
+		hud.append_log("Tag missed: out of reach (jumped)")
 
 func _handle_phase_event(phase: String, cry_index: int) -> void:
 	# Server sends 'turn_mime' / 'turn_clown' for the active-turn phases plus a
@@ -643,7 +728,8 @@ func _drive_online_hud() -> void:
 ## The authoritative XZ advances once per physics tick inside
 ## _advance_predicted_tick; this function only smooths the rendered body
 ## transform between those samples so a >60 Hz monitor stays fluid without
-## diverging from what the server sees.
+## diverging from what the server sees. Y is sampled directly from the jump
+## arc helper (no parallel lerp); the frozen-mid-jump descent uses _delta.
 func _advance_local_prediction(_delta: float) -> void:
 	if local_player == null or not _pred_armed:
 		return
@@ -662,15 +748,37 @@ func _advance_local_prediction(_delta: float) -> void:
 		rendered_xz = _pred_current_xz
 	else:
 		rendered_xz = _pred_prev_xz.lerp(_pred_current_xz, alpha)
-	local_player.global_position = Vector3(
-		rendered_xz.x, local_player.global_position.y, rendered_xz.y
-	)
+	# Y is a deterministic function of jumpStartedAt + wall-clock, so
+	# sample directly at render time. No parallel prev/current lerp
+	# needed - the arc itself is continuous. Frozen-mid-jump produces
+	# the one exception: the server clears jumpStartedAt and snaps Y
+	# to HOVER, but the local body would otherwise jump straight down
+	# in a single frame. Detect that case (predictor says not jumping
+	# but body is still above hover) and lerp Y at ~5 m/s instead.
+	var now_ms: int = int(Time.get_unix_time_from_system() * 1000.0)
+	var rendered_y: float = Physics.jump_arc_y(_pred_jump_started_at_ms, now_ms)
+	var body_y: float = rendered_y
+	if _pred_jump_started_at_ms < 0:
+		var current_y: float = local_player.global_position.y
+		if current_y - Physics.HOVER_HEIGHT > 0.1:
+			body_y = maxf(Physics.HOVER_HEIGHT, current_y - 5.0 * _delta)
+	local_player.global_position = Vector3(rendered_xz.x, body_y, rendered_xz.y)
+	# Push the predicted jumpStartedAt onto the body so its
+	# _apply_jump_squash runs from the same source the predictor uses.
+	# The local player rarely sees their own head (camera is inside it)
+	# but the third-person follow / spectator view also reads this.
+	local_player.jump_started_at_ms = _pred_jump_started_at_ms
 
 ## Advance the authoritative predicted position by one server-tick worth of
 ## motion. Called once per physics tick from _stream_input, matching the
 ## cadence the server uses to apply inputs. _process visually interpolates
-## between consecutive samples.
-func _advance_predicted_tick(world_move: Vector2, sprint_held: bool) -> void:
+## between consecutive samples for XZ and samples the arc directly for Y.
+func _advance_predicted_tick(
+	world_move: Vector2,
+	sprint_held: bool,
+	jump_pressed: bool,
+	input_now_ms: int,
+) -> void:
 	if local_player == null or labyrinth == null or topology == null:
 		return
 	var step := Movement.step(
@@ -685,11 +793,48 @@ func _advance_predicted_tick(world_move: Vector2, sprint_held: bool) -> void:
 	)
 	_pred_prev_xz = _pred_current_xz
 	_pred_current_xz = step["position"]
+	# Push out of overlap with any other body's rendered position. The
+	# server's resolvePlayerCollisions does the same on its side; without
+	# this, the local predictor advances INTO another body each tick and
+	# reconcile snaps back to the server's pushed-apart position - the
+	# round trip oscillates and the camera flickers between two angles.
+	# Approximation: we use the current rendered positions of other
+	# bodies (which lag the server by ~100 ms via remote interp), not
+	# their position at the input's exact tick. Server bounce will still
+	# correct any residual drift.
+	_pred_current_xz = Movement.resolve_overlap(
+		_pred_current_xz,
+		_collect_other_xz_positions(),
+		labyrinth.wall_endpoints(),
+		topology,
+	)
 	_pred_tick_start_t = Time.get_unix_time_from_system()
+	# Same step_jump the server runs. With the matching input_now_ms, the
+	# predicted jumpStartedAt equals what the server will store, so the
+	# arc Y matches at every render-rate sample after this point.
+	_pred_jump_started_at_ms = Physics.step_jump(
+		_pred_jump_started_at_ms,
+		jump_pressed,
+		input_now_ms,
+	)
 	local_sprint_energy = step["sprint_energy"]
 	local_sprinting = bool(step["sprinting"])
 	var planar: float = (_pred_current_xz - _pred_prev_xz).length() / INPUT_TICK_PERIOD
 	local_player.set_external_motion(planar, local_sprinting and world_move.length() > 0.0)
+
+# Collect XZ positions of every non-local rendered body. Used by the
+# predictor's collision-resolve step so the local body bounces off
+# others client-side rather than only after a server reconcile.
+func _collect_other_xz_positions() -> Array:
+	var result: Array = []
+	for id in player_nodes:
+		if id == local_player_id:
+			continue
+		var node: Node = player_nodes[id]
+		if node == null:
+			continue
+		result.append(Vector2(node.global_position.x, node.global_position.z))
+	return result
 
 func _stream_input(delta: float) -> void:
 	# _on_back_to_menu and the reconnect-failed popup null room_client and
@@ -721,18 +866,40 @@ func _stream_input(delta: float) -> void:
 	var frozen: bool = bool(local_player.frozen)
 	var effective_move: Vector2 = Vector2.ZERO if frozen else world_move
 	var effective_sprint: bool = false if frozen else sprinting
+	# Rising-edge spacebar detection so holding Space sends exactly one
+	# jump per press. The server's stepJump gates re-triggers on the
+	# arc + cooldown lockout anyway, but debouncing here keeps the input
+	# stream honest and avoids the predictor having to chew on a
+	# stuck-true input every tick.
+	var jump_pressed: bool = false
+	if not frozen and Input.is_action_pressed("jump"):
+		if not _jump_was_held:
+			jump_pressed = true
+		_jump_was_held = true
+	else:
+		_jump_was_held = false
+	var input_now_ms: int = int(Time.get_unix_time_from_system() * 1000.0)
 	pending_inputs.append({
 		"seq": input_seq,
 		"world_move": effective_move,
 		"sprint": effective_sprint,
 		"dt": INPUT_TICK_PERIOD,
+		"jump": jump_pressed,
+		"now_ms": input_now_ms,
 	})
-	room_client.send_input(input_seq, INPUT_TICK_PERIOD, effective_move, yaw, sprinting)
-	# Advance the authoritative predicted XZ by exactly the same input the
-	# server will apply. The render loop interpolates between consecutive
-	# samples in _advance_local_prediction so the body still updates smoothly
-	# at >60 Hz refresh rates.
-	_advance_predicted_tick(effective_move, effective_sprint)
+	room_client.send_input(
+		input_seq,
+		INPUT_TICK_PERIOD,
+		effective_move,
+		yaw,
+		sprinting,
+		jump_pressed,
+	)
+	# Advance the authoritative predicted XZ + jumpStartedAt by exactly
+	# the same input the server will apply. The render loop interpolates
+	# the XZ in _advance_local_prediction and recomputes Y from the arc
+	# at render rate so a >60 Hz monitor stays smooth.
+	_advance_predicted_tick(effective_move, effective_sprint, jump_pressed, input_now_ms)
 
 func _rotate_wasd_to_world(wasd: Vector2, yaw: float) -> Vector2:
 	# wasd.x = right input strength, wasd.y = back-minus-forward. Map to a
@@ -772,17 +939,36 @@ func _apply_player_state(entry: Dictionary) -> void:
 	if node == null:
 		return
 	var pos: Dictionary = entry.get("position", {"x": 0.0, "z": 0.0})
-	var pos_vec := Vector3(float(pos.get("x", 0.0)), 0.0, float(pos.get("z", 0.0)))
+	# Y now flows over the wire (PlayerState.position became Vec3 in
+	# PR 1). For backward-compat with any frame that omits it, default
+	# to HOVER_HEIGHT.
+	var pos_vec := Vector3(
+		float(pos.get("x", 0.0)),
+		float(pos.get("y", Physics.HOVER_HEIGHT)),
+		float(pos.get("z", 0.0)),
+	)
 	var yaw: float = float(entry.get("yaw", 0.0))
 	var is_frozen: bool = bool(entry.get("frozen", false))
 	var sprint: float = float(entry.get("sprintEnergy", 100.0))
+	# Server-authoritative jumpStartedAt. Drives the squash-and-stretch
+	# animation. Null on the wire arrives as Variant null; convert to
+	# the GDScript -1 null sentinel.
+	var server_jump_started: Variant = entry.get("jumpStartedAt", null)
+	var jump_started_at_ms: int = (
+		int(server_jump_started) if server_jump_started != null else -1
+	)
 	if id == local_player_id:
 		# Don't overwrite the local player's predicted position; sync the
 		# server-authoritative bits that the client cannot derive on its own.
 		node.frozen = is_frozen
 		node.sprint_energy = sprint
+		# Local body's jumpStartedAt comes from the predictor, not the
+		# server snapshot - the predictor is one tick ahead and stays
+		# in sync via the reconcile replay. Setting it here would lag
+		# the squash animation behind the body's actual Y.
 	else:
 		node.apply_remote_state(pos_vec, yaw, is_frozen, sprint)
+		node.jump_started_at_ms = jump_started_at_ms
 
 func _handle_tagged(event: Dictionary) -> void:
 	var victim_id: String = event.get("victimId", "")

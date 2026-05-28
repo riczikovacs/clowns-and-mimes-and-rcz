@@ -8,8 +8,10 @@ import type {
   Team,
   Topology,
   Vec2,
+  Vec3,
 } from '@cm/shared';
 import { BATTLE_CRY_COUNT, PROTOCOL_VERSION } from '@cm/shared';
+import { HOVER_HEIGHT, JUMP_COOLDOWN_S, JUMP_DURATION_S } from '@cm/shared/physics';
 import { topologyDistance, wrapPosition, wrappedUnitDelta } from '@cm/shared/topology';
 import {
   generateWalls,
@@ -20,6 +22,9 @@ import {
 } from '@cm/shared/labyrinth';
 import { balanceTeamAssignments } from './teamBalance.ts';
 import {
+  bodyYForState,
+  resolvePlayerCollisions,
+  stepJump,
   stepMovement,
   WALK_SPEED,
   SPRINT_SPEED,
@@ -27,6 +32,7 @@ import {
   SPRINT_DRAIN_PER_S,
   SPRINT_REGEN_PER_S,
 } from '@cm/shared/movement';
+import { verticallyOverlapping } from '@cm/shared/physics';
 import { BotPathfinder } from './botPathfinder.ts';
 
 // Server simulate + broadcast at 60 Hz. Each delta is ~16.7 ms apart so
@@ -75,13 +81,30 @@ const TURN_FIRST_MS = 30_000;
 const TURN_STEP_MS = 30_000;
 const TURN_CAP_MS = 5 * 60_000;
 const BOT_FILL_DELAY_MS = 3_000;
+// Maximum drift allowed between the client's stamped input.nowMs and
+// the server's Date.now() when the input lands. Inputs whose nowMs is
+// further out are still honoured but the server re-stamps the jump
+// arc start with its own clock, so a misbehaving (or wildly out of
+// sync) client cannot anchor jumpStartedAt arbitrarily far in the past
+// or future. 500 ms is generous against legitimate network jitter and
+// tight enough that the cheat ceiling is bounded.
+const JUMP_CLIENT_CLOCK_SKEW_MS = 500;
 // Window during which a player whose WS has closed can reconnect with
 // their sessionToken and resume the same PlayerState. Bots keep playing
 // against them in absentia; their input queue stays empty so their body
 // stands still (and is vulnerable to tags) until the WS is back. After
 // the window expires their PlayerState is torn down for real and the
 // usual humans-zero match-state cleanup runs.
-const RECONNECT_GRACE_MS = 15_000;
+//
+// 45 s is sized to outrun the worst-case client reconnect ladder. The
+// arena schedules 3 attempts with backoffs [0.5, 1.5, 3.0] and each
+// step waits `wait_s + 1` for the connection result, so the ladder
+// itself can take ~13 s. The disconnect also takes a moment to surface
+// on the client (TCP retries, Godot's STATE_CLOSED detection). 15 s
+// left only ~2 s of margin and lost the race in the wild: finalize
+// ran first, the player slot was nuked, and the reconnect arrived as
+// a fresh join in a bot-empty room.
+const RECONNECT_GRACE_MS = 45_000;
 // Wider vision so bots commit to a chase / flee instead of dithering on
 // patrol when an opponent is across a corridor. World half-diagonal is ~56,
 // so 22 covers most short corridors without making bots omniscient.
@@ -181,7 +204,30 @@ interface BotMind {
   // different parts of the map instead of pacing between the same spots.
   // Newest at the end; capped at BOT_RECENT_TARGETS_KEEP.
   recentTargets: Array<{ x: number; z: number }>;
+  // Wall-clock of the bot's last jump takeoff (Unix ms). Used to debounce
+  // the three jump triggers (tag-threat, stuck-in-corner, tactical noise)
+  // so a bot doesn't bunny-hop every tick the predicate fires. 0 means
+  // "never jumped this match".
+  lastJumpedAt: number;
 }
+
+// Minimum gap between bot jumps so a sustained threat doesn't make the
+// bot hop on every tick. The natural JUMP_DURATION_S + JUMP_COOLDOWN_S
+// lockout in stepJump would already prevent it, but enforcing a longer
+// gap here keeps the rhythm reading as deliberate rather than spammy.
+const BOT_JUMP_REFRACTORY_MS = 1500;
+// Per-tick probability of a tactical-noise jump during an active chase.
+// 5% per second at 60 Hz simulate; gives ~3 noise jumps per minute,
+// enough to keep bots from being read trivially without spamming.
+const BOT_JUMP_NOISE_PER_SECOND = 0.05;
+// Extra reach added to TAG_RADIUS_BOT when evaluating the tag-threat
+// jump trigger. A bot inside (tag_radius + this) starts evading before
+// the attacker has actually reached tag range.
+const BOT_JUMP_EVADE_BUFFER = 0.5;
+// Maximum opponent distance for the corner-jump trigger. If a bot has
+// made no progress for BOT_NO_PROGRESS_WINDOW_MS AND an opponent is
+// within this range, jump to reposition.
+const BOT_JUMP_CORNER_THREAT_RADIUS = 4.0;
 
 interface Connection {
   ws: WebSocket;
@@ -248,6 +294,13 @@ export class Room implements DurableObject {
   // alongside the simulation (otherwise a 10 s wifi drop would burn
   // through 10 s of the active turn timer in the player's absence).
   private pausedSince: number | null = null;
+  // Each player's XZ position as of the start of the current tick.
+  // resolvePlayerCollisions uses this to derive an approach speed
+  // between two bodies (so the bounce-back impulse can scale with
+  // closing velocity). Updated at the end of every simulate() pass
+  // from the post-tick positions, so the NEXT tick's collision pass
+  // sees the right "where each player was".
+  private readonly prevTickPositions = new Map<string, { x: number; z: number }>();
   private botFillHandle: ReturnType<typeof setTimeout> | null = null;
   private readonly botMinds = new Map<string, BotMind>();
   // Wall-clock ms when each player was last unfrozen. Used by canTag to
@@ -473,6 +526,7 @@ export class Room implements DurableObject {
       frozen: false,
       sprintEnergy: MAX_SPRINT,
       sprinting: false,
+      jumpStartedAt: null,
     };
     this.players.set(id, player);
     this.connections.set(ws, { ws, playerId: id });
@@ -570,6 +624,7 @@ export class Room implements DurableObject {
           frozen: false,
           sprintEnergy: MAX_SPRINT,
           sprinting: false,
+          jumpStartedAt: null,
         });
         this.botMinds.set(id, {
           patrolTarget: this.randomPatrolPoint(),
@@ -582,6 +637,7 @@ export class Room implements DurableObject {
           lastKnownPos: null,
           investigateUntil: 0,
           recentTargets: [],
+          lastJumpedAt: 0,
         });
       }
     }
@@ -668,17 +724,6 @@ export class Room implements DurableObject {
    * back-and-forth as visible jitter. The threshold is two body radii plus
    * a small buffer so capsules never touch.
    */
-  private collidesWithOtherPlayer(self: PlayerState, x: number, z: number): boolean {
-    const PERSONAL_SPACE = 1.0; // 2 * PLAYER_RADIUS (0.4) + buffer
-    for (const other of this.players.values()) {
-      if (other.id === self.id) continue;
-      const dx = other.position.x - x;
-      const dz = other.position.z - z;
-      if (dx * dx + dz * dz < PERSONAL_SPACE * PERSONAL_SPACE) return true;
-    }
-    return false;
-  }
-
   /**
    * Pick a spawn point that (a) is not inside a wall, and (b) does not
    * overlap any existing player. Tries up to SPAWN_PICK_ATTEMPTS jitter
@@ -689,10 +734,11 @@ export class Room implements DurableObject {
    * resolution will nudge the player out of any remaining overlap on the
    * next tick.
    */
-  private pickSpawnPosition(team: Team): { x: number; z: number } {
+  private pickSpawnPosition(team: Team): Vec3 {
     const minPlayerSep = 2 * PLAYER_RADIUS + 0.2;
     const minPlayerSepSq = minPlayerSep * minPlayerSep;
     const center = teamSpawnCenter(team);
+    const at = (x: number, z: number): Vec3 => ({ x, y: HOVER_HEIGHT, z });
     const isValid = (x: number, z: number): boolean => {
       if (this.walls.length > 0 && pointBlockedByWall(this.walls, x, z)) return false;
       for (const other of this.players.values()) {
@@ -704,7 +750,7 @@ export class Room implements DurableObject {
     };
     for (let attempt = 0; attempt < 24; attempt += 1) {
       const candidate = jitteredSpawn(team);
-      if (isValid(candidate.x, candidate.z)) return candidate;
+      if (isValid(candidate.x, candidate.z)) return at(candidate.x, candidate.z);
     }
     // Deterministic outward sweep: rings of 6, 12, 18 candidates at
     // increasing radius around the team center. Catches the case where
@@ -717,10 +763,10 @@ export class Room implements DurableObject {
         const angle = (k / count) * Math.PI * 2;
         const x = center.x + Math.cos(angle) * radius;
         const z = center.z + Math.sin(angle) * radius;
-        if (isValid(x, z)) return { x, z };
+        if (isValid(x, z)) return at(x, z);
       }
     }
-    return center;
+    return at(center.x, center.z);
   }
 
   setTopology(t: Topology): void {
@@ -880,13 +926,28 @@ export class Room implements DurableObject {
       this.send(ws, { t: 'tag_result', ok: false, reason });
       return;
     }
-    victim.frozen = true;
+    this.freezePlayer(victim);
     this.send(ws, { t: 'tag_result', ok: true, targetId });
     this.broadcast({
       t: 'event',
       kind: { kind: 'tagged', attackerId: attacker.id, victimId: victim.id, team: attacker.team },
     });
     this.checkWin();
+  }
+
+  /**
+   * Centralised freeze. Sets `frozen = true` and cancels any active jump
+   * arc so a tagged-mid-air body drops back to HOVER_HEIGHT for the
+   * snapshot wire rather than freezing in place at altitude. Clients
+   * render the descent as a short Y-lerp; the server's authoritative
+   * position is already on the ground.
+   */
+  private freezePlayer(p: PlayerState): void {
+    p.frozen = true;
+    if (p.jumpStartedAt !== null) {
+      p.jumpStartedAt = null;
+      p.position = { x: p.position.x, y: HOVER_HEIGHT, z: p.position.z };
+    }
   }
 
   private onUnfreeze(ws: WebSocket, targetId: string): void {
@@ -970,6 +1031,14 @@ export class Room implements DurableObject {
       )
     )
       return 'wall_in_way';
+    // Vertical-overlap gate. Option A from the jumping plan: tag fires
+    // on XZ overlap + vertical overlap, regardless of jump state. A
+    // peak jumper's Y minus a grounded body's Y equals JUMP_AMP, which
+    // is tuned just above BODY_VERTICAL_EXTENT so the peak-vs-grounded
+    // case rejects here. Synchronized jumpers (both near peak) pass
+    // and tag normally; mistimed jumpers fall outside the threshold
+    // and miss.
+    if (!verticallyOverlapping(attacker, victim)) return 'vertical_separation';
     return null;
   }
 
@@ -1136,7 +1205,52 @@ export class Room implements DurableObject {
     const dt = TICK_MS / 1000;
     this.simulateHumans(dt);
     this.simulateBots(dt);
+    this.advanceIdleJumpState();
+    // After every player has moved this tick, resolve any overlap +
+    // apply bounceback. Runs once per tick so impulses are bounded.
+    resolvePlayerCollisions(
+      [...this.players.values()],
+      this.prevTickPositions,
+      dt,
+      this.walls,
+      this.topology,
+      WORLD_WIDTH,
+      Date.now(),
+    );
+    // Refresh prev positions AFTER bounceback so next tick's approach
+    // velocity reflects the post-bounce stance, not the pre-bounce
+    // overlap that would otherwise show up as a phantom impulse.
+    this.prevTickPositions.clear();
+    for (const p of this.players.values()) {
+      this.prevTickPositions.set(p.id, { x: p.position.x, z: p.position.z });
+    }
     this.recordPositionsForLagComp();
+  }
+
+  /**
+   * Refresh Y and clear stale jumpStartedAt for every player whose
+   * stepJump did not run this tick (input queue was empty, or the
+   * player is frozen, or is a bot in PR 2 - PR 5 will give bots their
+   * own jump trigger). Without this pass, a mid-air player whose
+   * inputs stopped landing would have its jumpStartedAt sit at the
+   * takeoff timestamp indefinitely and the broadcast snapshot's
+   * position.y would stay stale; clients would still compute the
+   * correct Y from jumpArcY but the wire would carry the wrong
+   * authoritative value.
+   */
+  private advanceIdleJumpState(): void {
+    const now = Date.now();
+    const lockoutMs = (JUMP_DURATION_S + JUMP_COOLDOWN_S) * 1000;
+    for (const p of this.players.values()) {
+      if (p.jumpStartedAt !== null && now - p.jumpStartedAt >= lockoutMs) {
+        p.jumpStartedAt = null;
+      }
+      p.position = {
+        x: p.position.x,
+        y: bodyYForState({ jumpStartedAt: p.jumpStartedAt }, now),
+        z: p.position.z,
+      };
+    }
   }
 
   /**
@@ -1201,9 +1315,30 @@ export class Room implements DurableObject {
         this.walls,
         this.topology,
         WORLD_WIDTH,
-        (candidate) => this.collidesWithOtherPlayer(p, candidate.x, candidate.z),
+        // No collision gate here: resolvePlayerCollisions in the
+        // post-step pass handles overlap by pushing bodies apart and
+        // adding the bounceback impulse. A tick-level gate would
+        // suppress the overlap that the bounceback design needs to
+        // see; per-tick max overlap is bounded by walk speed * dt
+        // (~5 cm), which the next tick's resolve fully unwinds.
+        () => false,
+      );
+      // Jump trigger / lockout. The client stamps input.nowMs when it
+      // sends the input; we use that timestamp (clamped to local clock
+      // skew) as the new jumpStartedAt so the client's predicted arc
+      // start matches the authoritative value without a round-trip.
+      // Y is computed authoritatively in advanceIdleJumpState at end
+      // of tick using the server's Date.now().
+      const serverNow = Date.now();
+      const inputNow = input.nowMs ?? serverNow;
+      const skewMs = Math.abs(inputNow - serverNow);
+      const arcNow = skewMs > JUMP_CLIENT_CLOCK_SKEW_MS ? serverNow : inputNow;
+      const jump = stepJump(
+        { jumpStartedAt: p.jumpStartedAt },
+        { jump: input.jump ?? false, nowMs: arcNow },
       );
       p.position = next.position;
+      p.jumpStartedAt = jump.jumpStartedAt;
       p.sprintEnergy = next.sprintEnergy;
       p.sprinting = next.sprinting;
       p.yaw = input.lookYaw;
@@ -1239,6 +1374,7 @@ export class Room implements DurableObject {
         lastKnownPos: null,
         investigateUntil: 0,
         recentTargets: [],
+        lastJumpedAt: 0,
       };
       this.botMinds.set(bot.id, mind);
 
@@ -1331,6 +1467,58 @@ export class Room implements DurableObject {
       const fleeing =
         target !== null && enemyDist < BOT_VISION_RADIUS && active && active !== bot.team;
       const rescuing = rescueTarget !== null;
+
+      // Jump triggers. Three predicates share one refractory gate; any
+      // firing one re-anchors `bot.jumpStartedAt` (the simulate loop's
+      // advanceIdleJumpState then handles arc Y and lockout clearance).
+      // Skipped if the bot is already mid-arc or just landed - the
+      // refractory window outlasts the arc + cooldown so the next eval
+      // happens at a clean rest position.
+      const sinceLastJump = now - mind.lastJumpedAt;
+      const jumpEligible = bot.jumpStartedAt === null && sinceLastJump >= BOT_JUMP_REFRACTORY_MS;
+      let wantJump = false;
+      if (jumpEligible) {
+        // 1. Tag-threat evasion. Bot is on the defending team and an
+        //    unfrozen, non-jumping opponent is within tag range plus a
+        //    small reaction buffer. Skipping the trigger when the
+        //    threat is already airborne avoids both bodies dancing in
+        //    sync (which would still tag per Option A).
+        if (
+          fleeing &&
+          target !== null &&
+          !target.frozen &&
+          target.jumpStartedAt === null &&
+          enemyDist <= TAG_RADIUS_BOT + BOT_JUMP_EVADE_BUFFER
+        ) {
+          wantJump = true;
+        }
+        // 2. Cornered. The existing no-progress detector tells us the
+        //    bot is grinding into geometry; if any opponent is nearby
+        //    the jump repositions the bot via the bounceback that lands
+        //    after the arc rather than letting them be a sitting duck.
+        if (!wantJump) {
+          const noProgressDur = now - mind.progressSampleAt;
+          if (
+            noProgressDur >= BOT_NO_PROGRESS_WINDOW_MS &&
+            enemyDist <= BOT_JUMP_CORNER_THREAT_RADIUS
+          ) {
+            wantJump = true;
+          }
+        }
+        // 3. Tactical noise during active chase. Keeps the bots from
+        //    being readable trivially. Probability is scaled by the
+        //    tick duration so it stays per-second-stable regardless of
+        //    tick rate changes.
+        if (!wantJump && chasing) {
+          if (Math.random() < BOT_JUMP_NOISE_PER_SECOND * dt) {
+            wantJump = true;
+          }
+        }
+      }
+      if (wantJump) {
+        bot.jumpStartedAt = now;
+        mind.lastJumpedAt = now;
+      }
 
       let dir = { x: 0, z: 0 };
       if (fleeing && target) {
@@ -1465,8 +1653,19 @@ export class Room implements DurableObject {
           this.walls.length > 0 &&
           pathCrossesWall(this.walls, bot.position.x, bot.position.z, candidate.x, candidate.z);
         if (wallBlocked) continue;
-        if (this.collidesWithOtherPlayer(bot, candidate.x, candidate.z)) continue;
-        bot.position = wrapPosition({ x: candidate.x, z: candidate.z }, this.topology, WORLD_WIDTH);
+        // Bot-vs-other collisions are handled by resolvePlayerCollisions
+        // in the post-step pass (same as humans). A per-tick gate here
+        // would block the brief overlap that the bounceback needs to
+        // see, leaving bots dead-stopped against each other instead of
+        // ricocheting.
+        const wrapped = wrapPosition(
+          { x: candidate.x, z: candidate.z },
+          this.topology,
+          WORLD_WIDTH,
+        );
+        // Preserve Y across the wrap. Topology wrapping is XZ-only;
+        // jump-arc Y will be driven separately once PR 2 lands.
+        bot.position = { x: wrapped.x, y: bot.position.y, z: wrapped.z };
         moved = true;
         break;
       }
@@ -1544,7 +1743,7 @@ export class Room implements DurableObject {
         enemyDist <= TAG_RADIUS_BOT &&
         this.canTag(bot, target, TAG_RADIUS_BOT)
       ) {
-        target.frozen = true;
+        this.freezePlayer(target);
         this.broadcast({
           t: 'event',
           kind: { kind: 'tagged', attackerId: bot.id, victimId: target.id, team: bot.team },

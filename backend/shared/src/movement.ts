@@ -3,9 +3,20 @@
 // Both sides must call this with the same dt, inputs, and walls or
 // reconciliation replay drifts from the server.
 
-import type { Topology, Vec2 } from './protocol.ts';
-import { pathCrossesWall, type WallSegment } from './labyrinth.ts';
-import { wrapPositionFromStep } from './topology.ts';
+import type { PlayerState, Topology, Vec2, Vec3 } from './protocol.ts';
+import { pathCrossesWall, PLAYER_RADIUS, type WallSegment } from './labyrinth.ts';
+import { wrapPosition, wrapPositionFromStep, wrappedDeltaVec } from './topology.ts';
+import {
+  BOUNCE_E_AERIAL,
+  BOUNCE_E_GROUNDED,
+  BOUNCE_E_WALL,
+  HOVER_HEIGHT,
+  JUMP_COOLDOWN_S,
+  JUMP_DURATION_S,
+  isJumping,
+  jumpArcY,
+  verticallyOverlapping,
+} from './physics.ts';
 
 export const WALK_SPEED = 3.2;
 export const SPRINT_SPEED = 5.6;
@@ -29,7 +40,11 @@ export interface MoveStepInput {
 }
 
 export interface MoveStepState {
-  position: Vec2;
+  // Vec3 so the caller's Y (jump arc or HOVER_HEIGHT) survives the
+  // stepMovement call. The XZ planar step is computed internally; Y is
+  // copied through to the return value unchanged. Jump arc Y is driven
+  // separately by physics.ts::jumpArcY at the simulate-loop level.
+  position: Vec3;
   sprintEnergy: number;
   // Whether the player is currently considered to be sprinting. Set when
   // sprint engages, cleared when energy hits 0. While false, energy must
@@ -82,7 +97,10 @@ export function stepMovement(
     { x: state.position.x + Math.sign(dx) * speed * input.dt, z: state.position.z },
     { x: state.position.x, z: state.position.z + Math.sign(dz) * speed * input.dt },
   ];
-  let nextPos = state.position;
+  // Project to XZ for the planar collision pipeline; Y is preserved on
+  // the return value below regardless of which candidate wins.
+  const startXZ: Vec2 = { x: state.position.x, z: state.position.z };
+  let nextXZ: Vec2 = startXZ;
   for (const candidate of candidates) {
     if (candidate.x === state.position.x && candidate.z === state.position.z) continue;
     if (
@@ -94,9 +112,40 @@ export function stepMovement(
     if (collidesWithOther(candidate)) continue;
     // Möbius uses prev->candidate so the step can be rejected at the hard
     // z-bounds. Other topologies ignore prev.
-    nextPos = wrapPositionFromStep(state.position, candidate, topology, worldWidth);
+    nextXZ = wrapPositionFromStep(startXZ, candidate, topology, worldWidth);
     break;
   }
+  // Wall rebound: if the chosen candidate lost motion along an axis the
+  // wall blocked, apply a tiny opposite push so the body visibly "bumps"
+  // off the wall instead of dead-stopping. Compares the planned full
+  // diagonal motion (candidates[0]) against what we actually moved; the
+  // delta is the blocked component. With BOUNCE_E_WALL = 0.15 and
+  // typical sprint speed, the bump is < 1 cm per tick - subtle, but
+  // enough to read at 60 Hz. Re-check walls so a sliding rebound near a
+  // corner doesn't punch through the second wall.
+  const attemptedDx = candidates[0]!.x - startXZ.x;
+  const attemptedDz = candidates[0]!.z - startXZ.z;
+  const actualDx = nextXZ.x - startXZ.x;
+  const actualDz = nextXZ.z - startXZ.z;
+  const lossDx = attemptedDx - actualDx;
+  const lossDz = attemptedDz - actualDz;
+  const lossMag = Math.hypot(lossDx, lossDz);
+  const attemptedMag = Math.hypot(attemptedDx, attemptedDz);
+  // Only apply rebound for a GENUINE wall-blocked partial motion. If the
+  // loss is larger than the attempted step the "loss" is actually a
+  // topology wrap (nextXZ is on the far side of a seam, so raw delta
+  // shows tens of meters even though the body really moved a few cm).
+  // Rebounding from a wrap would shove the body off the playfield -
+  // playtest flicker at seams was caused by exactly that.
+  if (attemptedMag > 0 && lossMag <= attemptedMag * 1.5 && lossMag / attemptedMag > 0.1) {
+    const reboundX = -lossDx * BOUNCE_E_WALL;
+    const reboundZ = -lossDz * BOUNCE_E_WALL;
+    const candidateXZ: Vec2 = { x: nextXZ.x + reboundX, z: nextXZ.z + reboundZ };
+    const reboundBlocked =
+      walls.length > 0 && pathCrossesWall(walls, nextXZ.x, nextXZ.z, candidateXZ.x, candidateXZ.z);
+    if (!reboundBlocked) nextXZ = candidateXZ;
+  }
+  const nextPos: Vec3 = { x: nextXZ.x, y: state.position.y, z: nextXZ.z };
   const drained = wantSprint && moveLen > 0;
   const nextSprint = clamp(
     state.sprintEnergy + (drained ? -SPRINT_DRAIN_PER_S : SPRINT_REGEN_PER_S) * input.dt,
@@ -112,4 +161,188 @@ export function stepMovement(
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
+}
+
+export interface JumpStepInput {
+  // Rising-edge jump request (true on the input frame where the player
+  // pressed Space). Holding the key does NOT chain; clients debounce.
+  jump: boolean;
+  // Wall-clock time the client stamped on this input (Unix ms). Used as
+  // the new jumpStartedAt on trigger so the client predictor and the
+  // server agree on the arc start without a round-trip. Server callers
+  // should clamp into Date.now() ± 500 ms before passing in.
+  nowMs: number;
+}
+
+export interface JumpStepState {
+  // Null when the player is not in the jump-arc-or-cooldown lockout.
+  // Set to the takeoff timestamp when a jump triggers; stays set
+  // through the arc AND the post-landing cooldown so a queued
+  // `jump: true` next input cannot retrigger immediately. Clears to
+  // null automatically at the end of the lockout.
+  jumpStartedAt: number | null;
+}
+
+export interface JumpStepResult {
+  // New jumpStartedAt to write back to the player's state. Either
+  // unchanged, set to `input.nowMs` on takeoff, or null after the
+  // lockout expires. Y is NOT returned: the simulator's broadcast
+  // path recomputes Y from jumpStartedAt at the broadcast wall-clock
+  // so the snapshot's authoritative Y reflects the server's "now"
+  // rather than the input's arrival time.
+  jumpStartedAt: number | null;
+}
+
+/**
+ * One tick of jump trigger / lockout processing. Returns the
+ * authoritative jumpStartedAt to store on the player. Deterministic
+ * given the same state and input; reconcile replay produces identical
+ * output when the client feeds the same nowMs the server used.
+ *
+ * Lockout: jumpStartedAt stays set for JUMP_DURATION_S (arc) +
+ * JUMP_COOLDOWN_S (post-landing). New triggers are gated on
+ * jumpStartedAt === null so the cooldown sub-window naturally
+ * rejects rapid re-press. During the cooldown the body is already
+ * back at HOVER_HEIGHT (jumpArcY returns the floor for elapsed past
+ * the arc), only the input gate remains active.
+ */
+export function stepJump(state: JumpStepState, input: JumpStepInput): JumpStepResult {
+  const { nowMs } = input;
+  let jumpStartedAt = state.jumpStartedAt;
+
+  if (jumpStartedAt !== null) {
+    const elapsedMs = nowMs - jumpStartedAt;
+    const lockoutMs = (JUMP_DURATION_S + JUMP_COOLDOWN_S) * 1000;
+    if (elapsedMs >= lockoutMs) {
+      jumpStartedAt = null;
+    }
+  }
+
+  if (input.jump && jumpStartedAt === null) {
+    jumpStartedAt = nowMs;
+  }
+
+  return { jumpStartedAt };
+}
+
+/**
+ * Y the body should render at given the player's authoritative
+ * jumpStartedAt and the current wall-clock. Thin wrapper over
+ * jumpArcY so callers can stay in this module for the full jump
+ * surface.
+ */
+export function bodyYForState(state: { jumpStartedAt: number | null }, nowMs: number): number {
+  return jumpArcY(state.jumpStartedAt, nowMs);
+}
+
+// Re-export HOVER_HEIGHT so server callers that previously imported
+// movement constants can find it in the same module instead of
+// reaching into physics.ts for one symbol.
+export { HOVER_HEIGHT };
+
+/**
+ * Resolve player-vs-player overlaps after every player's XZ step has
+ * been applied. Pushes overlapping bodies apart along their contact
+ * normal AND adds a small extra-separation impulse proportional to
+ * their approach speed - this is what produces the visible bounce.
+ *
+ * `prevPositions` is the XZ each player held at the START of this
+ * tick (server holds this in a side-map; the client predictor can
+ * stub with current position for bodies it does not simulate). dt is
+ * the tick duration in seconds. The function mutates `players[i]`
+ * positions in place; bodies whose post-push position would cross a
+ * wall are left at their pre-push position so corner cases do not
+ * shove anyone through geometry.
+ *
+ * Coefficient of restitution: BOUNCE_E_AERIAL when either body is
+ * currently jumping (per physics.ts::isJumping), otherwise
+ * BOUNCE_E_GROUNDED. Frozen bodies still participate (a frozen body
+ * is solid; you bump off it) but do not get pushed themselves.
+ */
+export function resolvePlayerCollisions(
+  players: PlayerState[],
+  prevPositions: ReadonlyMap<string, Vec2>,
+  dt: number,
+  walls: readonly WallSegment[],
+  topology: Topology,
+  worldWidth: number,
+  nowMs: number,
+): void {
+  const minSep = 2 * PLAYER_RADIUS;
+  // Sort by id so the iteration order is deterministic - prevents any
+  // "first iterated player wins" bias and keeps server / client
+  // replay outputs bit-identical.
+  const sorted = [...players].sort((a, b) => a.id.localeCompare(b.id));
+  for (let i = 0; i < sorted.length; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      const a = sorted[i]!;
+      const b = sorted[j]!;
+      if (a.frozen && b.frozen) continue;
+      const delta = wrappedDeltaVec(
+        { x: a.position.x, z: a.position.z },
+        { x: b.position.x, z: b.position.z },
+        topology,
+        worldWidth,
+      );
+      const distXZ = Math.hypot(delta.x, delta.z);
+      if (distXZ >= minSep) continue;
+      if (!verticallyOverlapping(a, b)) continue;
+      // Normal points from a toward b. Zero-distance case: pick an
+      // arbitrary deterministic direction so the math is defined.
+      let nx: number;
+      let nz: number;
+      if (distXZ > 1e-6) {
+        nx = delta.x / distXZ;
+        nz = delta.z / distXZ;
+      } else {
+        nx = 1;
+        nz = 0;
+      }
+      const overlap = minSep - distXZ;
+      // Approach speed along the contact normal. Both prev positions
+      // default to current if missing (client predictor case for
+      // remote bodies it does not simulate); approach speed becomes 0
+      // and only the overlap is resolved, no impulse.
+      const aPrev = prevPositions.get(a.id) ?? { x: a.position.x, z: a.position.z };
+      const bPrev = prevPositions.get(b.id) ?? { x: b.position.x, z: b.position.z };
+      const aVx = (a.position.x - aPrev.x) / dt;
+      const aVz = (a.position.z - aPrev.z) / dt;
+      const bVx = (b.position.x - bPrev.x) / dt;
+      const bVz = (b.position.z - bPrev.z) / dt;
+      const approachAlongN = (aVx - bVx) * nx + (aVz - bVz) * nz;
+      const aJumping = isJumping(a, nowMs);
+      const bJumping = isJumping(b, nowMs);
+      const e = aJumping || bJumping ? BOUNCE_E_AERIAL : BOUNCE_E_GROUNDED;
+      const extraSep = Math.max(0, approachAlongN) * e * dt;
+      const pushEach = (overlap + extraSep) / 2;
+      // Frozen bodies don't get pushed (their captor expects them to
+      // hold position); the other body takes the full push instead.
+      const aShare = a.frozen ? 0 : b.frozen ? 2 : 1;
+      const bShare = b.frozen ? 0 : a.frozen ? 2 : 1;
+      const aTargetX = a.position.x - nx * pushEach * aShare;
+      const aTargetZ = a.position.z - nz * pushEach * aShare;
+      const bTargetX = b.position.x + nx * pushEach * bShare;
+      const bTargetZ = b.position.z + nz * pushEach * bShare;
+      const aBlocked =
+        walls.length > 0 && pathCrossesWall(walls, a.position.x, a.position.z, aTargetX, aTargetZ);
+      const bBlocked =
+        walls.length > 0 && pathCrossesWall(walls, b.position.x, b.position.z, bTargetX, bTargetZ);
+      if (aShare > 0 && !aBlocked) {
+        // Wrap after the push: a contact near a seam can shove the target
+        // position outside the canonical domain, and stepMovement on the
+        // next tick with zero input leaves an extended position untouched
+        // (its wrap only fires on a candidate move). The server then keeps
+        // broadcasting the extended coordinate forever, the client renders
+        // at body=extended one frame and body=wrap(extended) the next from
+        // _physics_process, and the camera flicks between two wrap-equivalent
+        // points - the "two angles" seam flicker.
+        const aWrapped = wrapPosition({ x: aTargetX, z: aTargetZ }, topology, worldWidth);
+        a.position = { x: aWrapped.x, y: a.position.y, z: aWrapped.z };
+      }
+      if (bShare > 0 && !bBlocked) {
+        const bWrapped = wrapPosition({ x: bTargetX, z: bTargetZ }, topology, worldWidth);
+        b.position = { x: bWrapped.x, y: b.position.y, z: bWrapped.z };
+      }
+    }
+  }
 }
