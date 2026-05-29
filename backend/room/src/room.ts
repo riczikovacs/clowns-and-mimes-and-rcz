@@ -32,8 +32,11 @@ import {
   SPRINT_DRAIN_PER_S,
   SPRINT_REGEN_PER_S,
 } from '@cm/shared/movement';
-import { verticallyOverlapping } from '@cm/shared/physics';
 import { BotPathfinder } from './botPathfinder.ts';
+import { parseClientMessage } from './messageValidator.ts';
+import { RateLimiter } from './rateLimiter.ts';
+import { SnapshotBroadcaster, type SnapshotBroadcasterHost } from './snapshotBroadcaster.ts';
+import { TagManager, type TagManagerHost } from './tagManager.ts';
 
 // Server simulate + broadcast at 60 Hz. Each delta is ~16.7 ms apart so
 // reconciliation corrections arrive 3x faster than the previous 20 Hz
@@ -48,6 +51,12 @@ const TICK_MS = 1000 / TICK_HZ;
 // past this limit the OLDEST is dropped so the simulation does not lag
 // further behind live time.
 const MAX_INPUT_QUEUE = 4;
+// Per-WebSocket rate-limit budget. 120 msg burst, 60/s sustained.
+// At TICK_HZ=60 the steady-state client sends ~60 inputs/s plus
+// occasional ping/tag/etc; this caps a flooding client to roughly
+// the same cadence while letting a brief jitter burst through.
+const RATE_LIMIT_CAPACITY = 120;
+const RATE_LIMIT_REFILL_PER_MS = 0.06;
 const FREE_ROAM_MS = 30_000;
 // Two-radius tag/unfreeze model.
 //
@@ -317,6 +326,13 @@ export class Room implements DurableObject {
   // change). simulateBots queries nextWaypoint so chase / rescue targets get
   // routed around wall segments instead of grinding into them.
   private pathfinder: BotPathfinder | null = null;
+  private readonly tagManager: TagManager;
+  private readonly broadcaster: SnapshotBroadcaster;
+  // One token bucket per live WebSocket. Created on accept, removed on
+  // detach. webSocketMessage rejects with a rate_limited error when the
+  // bucket is empty; the connection stays open so a transient burst
+  // doesn't force a reconnect cycle.
+  private readonly rateLimiters = new Map<WebSocket, RateLimiter>();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -324,6 +340,37 @@ export class Room implements DurableObject {
   ) {
     this.walls = generateWalls(this.seed, this.topology);
     this.rebuildPathfinder();
+    const broadcasterHost: SnapshotBroadcasterHost = {
+      players: this.players,
+      connections: this.connections,
+      lastAppliedSeq: this.lastAppliedSeq,
+      getPhase: () => this.phase,
+      getTurnEndsAt: () => this.turnEndsAt,
+      getSeed: () => this.seed,
+      getTopology: () => this.topology,
+      getRoomId: () => this.state.id.toString(),
+    };
+    this.broadcaster = new SnapshotBroadcaster(broadcasterHost);
+    const host: TagManagerHost = {
+      players: this.players,
+      lastSavedAt: this.lastSavedAt,
+      connections: this.connections,
+      worldWidth: WORLD_WIDTH,
+      unfreezeGraceMs: UNFREEZE_GRACE_MS,
+      unfreezeRadiusClient: UNFREEZE_RADIUS_CLIENT,
+      lagCompMs: LAG_COMP_MS,
+      getWalls: () => this.walls,
+      getTopology: () => this.topology,
+      getPhase: () => this.phase,
+      setPhase: (p) => {
+        this.phase = p;
+      },
+      positionAt: (id, atMs) => this.positionAt(id, atMs),
+      broadcast: (msg) => this.broadcast(msg),
+      send: (ws, msg) => this.send(ws, msg),
+      stopTick: () => this.stopTick(),
+    };
+    this.tagManager = new TagManager(host);
   }
 
   private rebuildPathfinder(): void {
@@ -409,17 +456,29 @@ export class Room implements DurableObject {
       this.hostTokenByWs.set(server, hostToken);
     }
     this.state.acceptWebSocket(server);
+    this.rateLimiters.set(
+      server,
+      new RateLimiter({ capacity: RATE_LIMIT_CAPACITY, refillPerMs: RATE_LIMIT_REFILL_PER_MS }),
+    );
     return new Response(null, { status: 101, webSocket: client });
   }
 
   webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): void {
-    let msg: ClientToServer;
+    const limiter = this.rateLimiters.get(ws);
+    if (limiter && !limiter.tryConsume()) {
+      this.send(ws, { t: 'error', code: 'rate_limited', message: 'too many messages' });
+      return;
+    }
+    let parsed: unknown;
     try {
-      msg = JSON.parse(
-        typeof raw === 'string' ? raw : new TextDecoder().decode(raw),
-      ) as ClientToServer;
+      parsed = JSON.parse(typeof raw === 'string' ? raw : new TextDecoder().decode(raw));
     } catch {
       this.send(ws, { t: 'error', code: 'invalid_message', message: 'bad json' });
+      return;
+    }
+    const msg = parseClientMessage(parsed);
+    if (msg === null) {
+      this.send(ws, { t: 'error', code: 'invalid_message', message: 'bad payload' });
       return;
     }
     this.handleMessage(ws, msg);
@@ -789,6 +848,7 @@ export class Room implements DurableObject {
     if (!conn) return;
     this.connections.delete(ws);
     this.hostTokenByWs.delete(ws);
+    this.rateLimiters.delete(ws);
     // If the host drops, leave hostPlayerId null. They (or a successor
     // who knows the hostToken) will re-claim on the next join. The room
     // stays in `filling` until something triggers startMatch, so the
@@ -913,137 +973,19 @@ export class Room implements DurableObject {
   }
 
   private onTag(ws: WebSocket, targetId: string): void {
-    const conn = this.connections.get(ws);
-    if (!conn) return;
-    const attacker = this.players.get(conn.playerId);
-    const victim = this.players.get(targetId);
-    if (!attacker || !victim) {
-      this.send(ws, { t: 'tag_result', ok: false, reason: 'missing' });
-      return;
-    }
-    const reason = this.tagRejectionReason(attacker, victim, TAG_RADIUS_CLIENT, true);
-    if (reason !== null) {
-      this.send(ws, { t: 'tag_result', ok: false, reason });
-      return;
-    }
-    this.freezePlayer(victim);
-    this.send(ws, { t: 'tag_result', ok: true, targetId });
-    this.broadcast({
-      t: 'event',
-      kind: { kind: 'tagged', attackerId: attacker.id, victimId: victim.id, team: attacker.team },
-    });
-    this.checkWin();
-  }
-
-  /**
-   * Centralised freeze. Sets `frozen = true` and cancels any active jump
-   * arc so a tagged-mid-air body drops back to HOVER_HEIGHT for the
-   * snapshot wire rather than freezing in place at altitude. Clients
-   * render the descent as a short Y-lerp; the server's authoritative
-   * position is already on the ground.
-   */
-  private freezePlayer(p: PlayerState): void {
-    p.frozen = true;
-    if (p.jumpStartedAt !== null) {
-      p.jumpStartedAt = null;
-      p.position = { x: p.position.x, y: HOVER_HEIGHT, z: p.position.z };
-    }
+    this.tagManager.onTag(ws, targetId, TAG_RADIUS_CLIENT);
   }
 
   private onUnfreeze(ws: WebSocket, targetId: string): void {
-    const conn = this.connections.get(ws);
-    if (!conn) return;
-    const savior = this.players.get(conn.playerId);
-    const victim = this.players.get(targetId);
-    if (!savior || !victim || !victim.frozen || savior.team !== victim.team) {
-      this.send(ws, { t: 'unfreeze_result', ok: false, reason: 'invalid' });
-      return;
-    }
-    // Lag-compensate the frozen teammate's position too: the client clicked
-    // save based on where they saw the body, not where the server currently
-    // has it. Frozen players don't move so this rarely matters, but staying
-    // consistent with onTag keeps the rules simple.
-    const victimPos = this.positionAt(victim.id, Date.now() - LAG_COMP_MS);
-    const dist = topologyDistance(savior.position, victimPos, this.topology, WORLD_WIDTH);
-    if (dist > UNFREEZE_RADIUS_CLIENT) {
-      // Encode the actual distance in the reason so the client diagnostic
-      // can show the magnitude of the gap (helps tune the radius without
-      // wading through Workers logs).
-      this.send(ws, {
-        t: 'unfreeze_result',
-        ok: false,
-        reason: `out_of_range:${dist.toFixed(2)}`,
-      });
-      return;
-    }
-    if (
-      this.walls.length > 0 &&
-      pathCrossesWall(this.walls, savior.position.x, savior.position.z, victimPos.x, victimPos.z)
-    ) {
-      this.send(ws, { t: 'unfreeze_result', ok: false, reason: 'wall_in_way' });
-      return;
-    }
-    victim.frozen = false;
-    this.lastSavedAt.set(victim.id, Date.now());
-    this.send(ws, { t: 'unfreeze_result', ok: true, targetId });
-    this.broadcast({
-      t: 'event',
-      kind: { kind: 'saved', saviorId: savior.id, victimId: victim.id },
-    });
-  }
-
-  /**
-   * Returns null when the tag is legal, or a short reason string otherwise.
-   * The reason is forwarded in tag_result so the HUD can surface why a tag
-   * was rejected ('not_your_turn', 'out_of_range', 'wall_in_way', ...)
-   * instead of just 'invalid'.
-   *
-   * lagCompensate is true for client-initiated tags only: the victim's
-   * position is rewound by LAG_COMP_MS so the distance check runs against
-   * the world state the client saw at the moment of the tag. Server-side
-   * bot tags pass false because they have no lag to compensate for.
-   */
-  private tagRejectionReason(
-    attacker: PlayerState,
-    victim: PlayerState,
-    radius: number,
-    lagCompensate: boolean,
-  ): string | null {
-    if (attacker.team === victim.team) return 'same_team';
-    if (attacker.frozen) return 'you_are_frozen';
-    if (victim.frozen) return 'already_frozen';
-    if (this.phase !== `turn_${attacker.team}`) return 'not_your_turn';
-    const savedAt = this.lastSavedAt.get(victim.id);
-    if (savedAt !== undefined && Date.now() - savedAt < UNFREEZE_GRACE_MS) return 'just_saved';
-    const victimPos = lagCompensate
-      ? this.positionAt(victim.id, Date.now() - LAG_COMP_MS)
-      : victim.position;
-    const d = topologyDistance(attacker.position, victimPos, this.topology, WORLD_WIDTH);
-    if (d > radius) return `out_of_range:${d.toFixed(2)}`;
-    if (
-      this.walls.length > 0 &&
-      pathCrossesWall(
-        this.walls,
-        attacker.position.x,
-        attacker.position.z,
-        victimPos.x,
-        victimPos.z,
-      )
-    )
-      return 'wall_in_way';
-    // Vertical-overlap gate. Option A from the jumping plan: tag fires
-    // on XZ overlap + vertical overlap, regardless of jump state. A
-    // peak jumper's Y minus a grounded body's Y equals JUMP_AMP, which
-    // is tuned just above BODY_VERTICAL_EXTENT so the peak-vs-grounded
-    // case rejects here. Synchronized jumpers (both near peak) pass
-    // and tag normally; mistimed jumpers fall outside the threshold
-    // and miss.
-    if (!verticallyOverlapping(attacker, victim)) return 'vertical_separation';
-    return null;
+    this.tagManager.onUnfreeze(ws, targetId);
   }
 
   private canTag(attacker: PlayerState, victim: PlayerState, radius: number): boolean {
-    return this.tagRejectionReason(attacker, victim, radius, false) === null;
+    return this.tagManager.canTag(attacker, victim, radius);
+  }
+
+  private freezePlayer(p: PlayerState): void {
+    this.tagManager.freezePlayer(p);
   }
 
   private tally(team: Team): number {
@@ -1097,17 +1039,7 @@ export class Room implements DurableObject {
   }
 
   private checkWin(): void {
-    const mimesActive = [...this.players.values()].filter((p) => p.team === 'mime' && !p.frozen);
-    const clownsActive = [...this.players.values()].filter((p) => p.team === 'clown' && !p.frozen);
-    if (mimesActive.length === 0) {
-      this.phase = 'ended';
-      this.broadcast({ t: 'event', kind: { kind: 'win', team: 'clown' } });
-      this.stopTick();
-    } else if (clownsActive.length === 0) {
-      this.phase = 'ended';
-      this.broadcast({ t: 'event', kind: { kind: 'win', team: 'mime' } });
-      this.stopTick();
-    }
+    this.tagManager.checkWin();
   }
 
   private startMatch(): void {
@@ -1821,46 +1753,19 @@ export class Room implements DurableObject {
   }
 
   private broadcastDelta(): void {
-    const players = [...this.players.values()];
-    for (const conn of this.connections.values()) {
-      this.send(conn.ws, {
-        t: 'delta',
-        players,
-        phase: this.phase,
-        turnEndsAt: this.turnEndsAt,
-        // ackSeq is the seq of the input most recently applied in
-        // simulateHumans, not the most recently received. The client uses
-        // this to know which buffered inputs to drop and which to replay
-        // when reconciling its predicted position with the server's truth.
-        ackSeq: this.lastAppliedSeq.get(conn.playerId) ?? 0,
-      });
-    }
+    this.broadcaster.broadcastDelta();
   }
 
   private snapshot(): RoomSnapshot {
-    return {
-      v: PROTOCOL_VERSION,
-      roomId: this.state.id.toString(),
-      seed: this.seed,
-      topology: this.topology,
-      phase: this.phase,
-      turnEndsAt: this.turnEndsAt,
-      players: [...this.players.values()],
-    };
+    return this.broadcaster.snapshot();
   }
 
   private broadcast(msg: ServerToClient): void {
-    for (const conn of this.connections.values()) {
-      this.send(conn.ws, msg);
-    }
+    this.broadcaster.broadcast(msg);
   }
 
   private send(ws: WebSocket, msg: ServerToClient): void {
-    try {
-      ws.send(JSON.stringify(msg));
-    } catch {
-      // socket likely closed; cleanup happens on close event
-    }
+    this.broadcaster.send(ws, msg);
   }
 
   private stopTick(): void {

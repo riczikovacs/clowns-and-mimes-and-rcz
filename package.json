@@ -21,10 +21,15 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "build": "pnpm -r --if-present build",
-    "dev": "pnpm -r --parallel --if-present dev"
+    "dev": "pnpm -r --parallel --if-present dev",
+    "gen:movement-fixture": "tsx scripts/gen-movement-fixture.ts",
+    "gen:gridmaze-fixture": "tsx scripts/gen-gridmaze-fixture.ts",
+    "gen:topology-fixture": "tsx scripts/gen-topology-fixture.ts",
+    "gen:physics-fixture": "tsx scripts/gen-physics-fixture.ts"
   },
   "devDependencies": {
     "prettier": "3.3.3",
+    "tsx": "4.19.1",
     "typescript": "5.6.3"
   }
 }

@@ -25,6 +25,7 @@ const Movement := preload("res://scripts/movement.gd")
 const Physics := preload("res://scripts/physics.gd")
 const IN_GAME_MENU := preload("res://scenes/in_game_menu.tscn")
 const GameRulesScript := preload("res://scripts/game_rules.gd")
+const PlayerScript := preload("res://scripts/player.gd")
 const TopologyScript := preload("res://scripts/topology/topology.gd")
 const TopologyFactory := preload("res://scripts/topology/topology_factory.gd")
 const BotAIScript := preload("res://scripts/bot_ai.gd")
@@ -64,6 +65,25 @@ const PING_INTERVAL_S := 5.0
 # the player never sees the menu bounce for those.
 const RECONNECT_BACKOFF_S: Array[float] = [0.5, 1.5, 3.0]
 
+# Environment palettes for the light / dark arena modes. Toggled by the
+# Settings overlay; apply_light_mode swaps between these wholesale.
+# Pulled into named consts so a designer pass on the palette doesn't
+# require fishing through if/else branches.
+const LIGHT_BACKGROUND := Color(0.55, 0.75, 0.95)
+const LIGHT_AMBIENT := Color(0.95, 0.95, 0.92)
+const LIGHT_AMBIENT_ENERGY := 0.6
+const LIGHT_FOG := Color(0.72, 0.82, 0.95)
+const LIGHT_FOG_DENSITY := 0.006
+const LIGHT_SUN_COLOR := Color(1.0, 0.98, 0.92)
+const LIGHT_SUN_ENERGY := 1.0
+const DARK_BACKGROUND := Color(0.04, 0.04, 0.05)
+const DARK_AMBIENT := Color(0.45, 0.4, 0.55)
+const DARK_AMBIENT_ENERGY := 0.18
+const DARK_FOG := Color(0.06, 0.05, 0.09)
+const DARK_FOG_DENSITY := 0.018
+const DARK_SUN_COLOR := Color(1.0, 1.0, 1.0)
+const DARK_SUN_ENERGY := 0.45
+
 const MIME_BATTLE_CRIES := [
 	"MIMES- ATTACK!", "MIMES- STRIKE!", "MIMES- POUNCE!", "MIMES- ENTRAP!",
 	"MIMES- BAFFLE!", "MIMES- SHUSH!", "MIMES- GLARE!", "MIMES- LUNGE!",
@@ -88,7 +108,7 @@ var labyrinth: Node3D = null
 var menu: CanvasLayer = null
 
 # Offline-only.
-var rules: Node = null
+var rules: GameRulesScript = null
 
 # Online-only.
 var room_client: Node = null
@@ -136,7 +156,7 @@ var _pred_jump_started_at_ms: int = -1
 var _jump_was_held: bool = false
 
 # Shared.
-var local_player: Node = null
+var local_player: PlayerScript = null
 var local_player_id: String = ""
 var player_nodes: Dictionary = {}
 var contact_cooldowns: Dictionary = {}
@@ -146,12 +166,24 @@ var _ping_accumulator: float = 0.0
 var _reconnect_attempt: int = 0
 var _reconnect_active: bool = false
 var _reconnect_label: Label = null
+# Delays the banner so transient drops the ladder absorbs (CF edge blip,
+# DO migration, brief ISP wobble) don't flash the "Reconnecting..." UI.
+# When the reconnect succeeds before this fires we kill the timer in
+# _hide_reconnect_banner and the player never sees the banner.
+const RECONNECT_BANNER_DELAY_S := 1.0
+var _reconnect_banner_timer: Timer = null
 # Stashed so _show_reconnect_failed_popup can surface the original drop
 # reason in the side log once the ladder has actually given up. We hold
 # the log line back from _on_room_disconnected because the "Reconnecting..."
 # banner is the right transient UI; the log line was noisy and scary on
 # every CF edge blip the ladder absorbed invisibly.
 var _last_disconnect_reason: String = ""
+
+# Suppress repeat tag-rejection HUD lines closer than this many seconds.
+# Without this, walking into a wall while spamming the contact button
+# spams the side log at 60Hz.
+const TAG_REJECT_HUD_THROTTLE_S := 1.5
+var _last_tag_reject_log_at: float = -1000.0
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -197,21 +229,21 @@ func apply_light_mode(enabled: bool) -> void:
 		return
 	var env: Environment = env_node.environment
 	if enabled:
-		env.background_color = Color(0.55, 0.75, 0.95)
-		env.ambient_light_color = Color(0.95, 0.95, 0.92)
-		env.ambient_light_energy = 0.6
-		env.fog_light_color = Color(0.72, 0.82, 0.95)
-		env.fog_density = 0.006
-		sun.light_energy = 1.0
-		sun.light_color = Color(1.0, 0.98, 0.92)
+		env.background_color = LIGHT_BACKGROUND
+		env.ambient_light_color = LIGHT_AMBIENT
+		env.ambient_light_energy = LIGHT_AMBIENT_ENERGY
+		env.fog_light_color = LIGHT_FOG
+		env.fog_density = LIGHT_FOG_DENSITY
+		sun.light_energy = LIGHT_SUN_ENERGY
+		sun.light_color = LIGHT_SUN_COLOR
 	else:
-		env.background_color = Color(0.04, 0.04, 0.05)
-		env.ambient_light_color = Color(0.45, 0.4, 0.55)
-		env.ambient_light_energy = 0.18
-		env.fog_light_color = Color(0.06, 0.05, 0.09)
-		env.fog_density = 0.018
-		sun.light_energy = 0.45
-		sun.light_color = Color(1.0, 1.0, 1.0)
+		env.background_color = DARK_BACKGROUND
+		env.ambient_light_color = DARK_AMBIENT
+		env.ambient_light_energy = DARK_AMBIENT_ENERGY
+		env.fog_light_color = DARK_FOG
+		env.fog_density = DARK_FOG_DENSITY
+		sun.light_energy = DARK_SUN_ENERGY
+		sun.light_color = DARK_SUN_COLOR
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_pause") and not menu.visible:
@@ -385,7 +417,7 @@ func _on_room_disconnected(reason: String) -> void:
 	_reconnect_active = true
 	_reconnect_attempt = 0
 	_last_disconnect_reason = reason
-	_show_reconnect_banner("Reconnecting...")
+	_show_reconnect_banner_delayed("Reconnecting...")
 	# Hold off on the HUD log line. The "Reconnecting..." banner is enough
 	# transient feedback - most drops are CF edge / DO migration blips that
 	# the ladder absorbs invisibly. Only surface "Disconnected: <reason>"
@@ -403,8 +435,11 @@ func _schedule_next_reconnect() -> void:
 		return
 	# Clear stale per-session state so reconciliation does not replay inputs
 	# from before the drop. The fresh snapshot from the server's onJoin will
-	# repopulate everything.
+	# repopulate everything. contact_cooldowns is keyed by player ID; ID reuse
+	# across reconnects is unlikely but possible, and a stale entry would
+	# silently swallow the first tag after resume.
 	pending_inputs.clear()
+	contact_cooldowns.clear()
 	snapshot_received = false
 	room_client.connect_to(GameState.server_url)
 	# If the connect call dispatches another `disconnected` immediately
@@ -435,7 +470,26 @@ func _show_reconnect_banner(text: String) -> void:
 	_reconnect_label.text = text
 	_reconnect_label.visible = true
 
+# Schedule the banner to appear after RECONNECT_BANNER_DELAY_S. If the
+# reconnect succeeds inside that window, _hide_reconnect_banner kills
+# the timer and the banner never shows - no flicker for the common
+# case of a brief CF edge blip.
+func _show_reconnect_banner_delayed(text: String) -> void:
+	_cancel_reconnect_banner_timer()
+	_reconnect_banner_timer = Timer.new()
+	_reconnect_banner_timer.one_shot = true
+	_reconnect_banner_timer.wait_time = RECONNECT_BANNER_DELAY_S
+	add_child(_reconnect_banner_timer)
+	_reconnect_banner_timer.timeout.connect(_show_reconnect_banner.bind(text))
+	_reconnect_banner_timer.start()
+
+func _cancel_reconnect_banner_timer() -> void:
+	if _reconnect_banner_timer != null:
+		_reconnect_banner_timer.queue_free()
+		_reconnect_banner_timer = null
+
 func _hide_reconnect_banner() -> void:
+	_cancel_reconnect_banner_timer()
 	if _reconnect_label != null:
 		_reconnect_label.visible = false
 
@@ -455,7 +509,7 @@ func _show_reconnect_failed_popup() -> void:
 	var retry_button := dialog.add_button("Reconnect", true, "retry")
 	retry_button.pressed.connect(_on_reconnect_retry_pressed.bind(dialog))
 	dialog.confirmed.connect(_on_reconnect_give_up)
-	add_child(dialog)
+	_attach_dialog_lifecycle(dialog)
 	dialog.popup_centered()
 
 func _on_reconnect_retry_pressed(dialog: AcceptDialog) -> void:
@@ -487,6 +541,7 @@ func _on_snapshot(snapshot: Dictionary, you_are: String) -> void:
 	# inputs sent before the snapshot arrived describe motion from a
 	# different origin and replaying them would compound the offset.
 	pending_inputs.clear()
+	contact_cooldowns.clear()
 	for entry in snapshot.get("players", []):
 		if entry.get("id", "") == local_player_id and local_player != null:
 			var pos: Dictionary = entry.get("position", {"x": 0.0, "z": 0.0})
@@ -639,14 +694,30 @@ func _on_room_event(event: Dictionary) -> void:
 func _handle_tag_result(event: Dictionary) -> void:
 	if bool(event.get("ok", false)):
 		return
-	# Surface specific failure reasons to the HUD log so the player can
-	# tell why the tag missed. vertical_separation in particular is the
-	# new "they jumped out of reach" feedback after PR 2's tag-vertical
-	# gate; without a message the tag just silently fails and the
-	# player thinks the input dropped.
-	var reason: String = String(event.get("reason", ""))
+	_surface_tag_reject(String(event.get("reason", "")))
+
+# Maps server tag_result.reason codes to short HUD hints. Codes the
+# player wouldn't act on (same_team, you_are_frozen, missing) stay
+# silent. out_of_range fires on every near-miss so it's silent too;
+# the reach is visually obvious. Throttled so contact spam at 60Hz
+# doesn't fill the log.
+func _surface_tag_reject(reason: String) -> void:
+	var hint: String = ""
 	if reason == "vertical_separation":
-		hud.append_log("Tag missed: out of reach (jumped)")
+		hint = "Tag missed: out of reach (jumped)"
+	elif reason == "wall_in_way":
+		hint = "Tag blocked: wall in the way"
+	elif reason == "just_saved":
+		hint = "Just unfrozen - try again in a moment"
+	elif reason == "not_your_turn":
+		hint = "Wait for your team's turn"
+	if hint.is_empty():
+		return
+	var now: float = Time.get_unix_time_from_system()
+	if now - _last_tag_reject_log_at < TAG_REJECT_HUD_THROTTLE_S:
+		return
+	_last_tag_reject_log_at = now
+	hud.append_log(hint)
 
 func _handle_phase_event(phase: String, cry_index: int) -> void:
 	# Server sends 'turn_mime' / 'turn_clown' for the active-turn phases plus a
@@ -688,7 +759,7 @@ func _show_match_in_progress_popup() -> void:
 	dialog.ok_button_text = "Back to menu"
 	dialog.unresizable = true
 	dialog.confirmed.connect(_on_back_to_menu)
-	add_child(dialog)
+	_attach_dialog_lifecycle(dialog)
 	dialog.popup_centered()
 
 func _show_version_mismatch_popup(server_message: String) -> void:
@@ -706,8 +777,18 @@ func _show_version_mismatch_popup(server_message: String) -> void:
 	dialog.unresizable = true
 	var open_button := dialog.add_button("Get latest", true, "open_site")
 	open_button.pressed.connect(func(): OS.shell_open(VersionCheck.WEBSITE_URL))
-	add_child(dialog)
+	_attach_dialog_lifecycle(dialog)
 	dialog.popup_centered()
+
+# Wire any AcceptDialog so it self-cleans on any close path. Without this,
+# clicking the X (close_requested) or hitting OK on a popup whose confirmed
+# handler doesn't change scenes (version mismatch's Close button is the
+# canonical case) leaves the dialog node in the tree forever - stacking
+# multiple reconnect popups across a churny session leaks them all.
+func _attach_dialog_lifecycle(dialog: AcceptDialog) -> void:
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.close_requested.connect(dialog.queue_free)
+	add_child(dialog)
 
 func _drive_online_hud() -> void:
 	if not snapshot_received:
@@ -781,6 +862,13 @@ func _advance_predicted_tick(
 	input_now_ms: int,
 ) -> void:
 	if local_player == null or labyrinth == null or topology == null:
+		return
+	# Don't advance from uninitialized state. _stream_input can fire after
+	# the WS connects but before the first snapshot arrives, at which point
+	# _pred_current_xz is still Vector2.ZERO and stepping from origin would
+	# pile garbage into pending_inputs. The server has the real spawn; we'll
+	# pick it up from the snapshot and replay the queued inputs from there.
+	if not _pred_armed:
 		return
 	var step := Movement.step(
 		{
@@ -1137,8 +1225,7 @@ func _on_offline_tag_rejected(attacker_id: String, _victim_id: String, reason: S
 	# message and the verbose log would be noisy with bot misses.
 	if attacker_id != local_player_id:
 		return
-	if reason == "vertical_separation":
-		hud.append_log("Tag missed: out of reach (jumped)")
+	_surface_tag_reject(reason)
 
 func _on_offline_saved(victim_id: String, savior_id: String) -> void:
 	var victim: Node = player_nodes.get(victim_id)
